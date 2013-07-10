@@ -1,0 +1,8 @@
+#! /usr/bin/env python
+
+import aaltoasr
+
+with aaltoasr.AaltoASR('rec') as asr:
+    asr.phone_probs()
+    asr.rec()
+    asr.gen_output()

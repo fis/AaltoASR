@@ -1,0 +1,477 @@
+import argparse
+import os
+import re
+import shutil
+import sys
+import tempfile
+import textwrap
+from itertools import groupby
+from os.path import basename, join
+from subprocess import call, check_output, CalledProcessError
+
+"""Aalto ASR tools for CSC Hippu environment.
+
+This module contains the required glue code for using the Aalto ASR
+tools for simple speech recognition and forced alignment tasks, in the
+CSC Hippu environment.
+"""
+
+# Overall settings and paths to data files
+
+rootdir = '/home/htkallas/hippu/root'
+models = {
+    '16k': { 'path': 'speecon_mfcc_gain3500_occ225_1.11.2007_20', 'srate': 16000, 'fstep': 128, 'default': 1 },
+    '8k': { 'path': 'speechdat_mfcc_gain4000_occ350_13.2.2008_20', 'srate': 8000, 'fstep': 128 }
+    }
+
+def bin(prog):
+    return join(rootdir, 'bin', prog)
+
+default_lmscale = 30
+
+# General-purpose helpers for error messages and such
+
+def err(msg, exit=-1):
+    sys.stderr.write('%s: error: %s\n' % (basename(sys.argv[0]), msg))
+    if exit >= 0: sys.exit(exit)
+
+def log(msg):
+    sys.stderr.write('%s: %s\n' % (basename(sys.argv[0]), msg))
+
+# Class for implementing the rec/align tools
+
+class AaltoASR(object):
+    def __init__(self, tool):
+        """Initialize and parse command line attributes."""
+
+        self.tool = tool
+
+        # Ask argparse to grok the command line arguments
+
+        desc = {
+            'rec': 'Recognize speech from an audio file.',
+            'align': 'Align a transcription to a speech audio file.'
+            }
+        usage = {
+            'rec': '%(prog)s [options] input',
+            'align': '%(prog)s [options] -t transcript input'
+            }
+        validmode = {
+            'rec': set(('trans', 'segword', 'segmorph', 'segphone')),
+            'align': set(('segword', 'segphone'))
+            }
+        defmode = {
+            'rec': 'trans',
+            'align': 'segword'
+            }
+
+        epi = ('The MODE parameter specifies which results to include in the generated output. '
+               'It has the form of a comma-separated list of the terms "trans"(*), "segword", '
+               '"segmorph"(*) and "segphone", denoting a transcript of the recognized text, '
+               'a word-level, statistical-morpheme-level or phoneme-level segmentation, '
+               'respectively.  Terms marked with (*) are only available when using aaltoasr-rec.  '
+               'The listed items will be included in the plaintext output.  The default is "%s".  '
+               'For more details, see XXX.') % defmode[tool]
+
+        parser = argparse.ArgumentParser(description=desc[tool], usage=usage[tool], epilog=epi)
+
+        parser.add_argument('input', help='input audio file')
+        parser.add_argument('-t', '--trans', help='provide an input transcript file', metavar='file',
+                            required=True if tool == 'align' else False,
+                            type=argparse.FileType('r'), default=None)
+        parser.add_argument('-o', '--output', help='output results to file [default stdout]', metavar='file',
+                            type=argparse.FileType('w'), default=sys.stdout)
+        parser.add_argument('-m', '--mode', help='which kind of results to output (see below)', metavar='MODE',
+                            default=defmode[tool])
+        parser.add_argument('-T', '--tg', help='output also a Praat TextGrid segmentation to file', metavar='file',
+                            type=argparse.FileType('w'), default=None)
+        parser.add_argument('-M', '--model', help='acoustic model to use; "-M ?" for list', metavar='M')
+        parser.add_argument('--noexp', help='disable input transcript expansion', action='store_true')
+        if tool == 'rec':
+            parser.add_argument('-L', '--lmscale', help='language model scale factor [default %d]' % default_lmscale, metavar='L',
+                                type=int, default=default_lmscale)
+        parser.add_argument('--tempdir', help='directory for temporary files', metavar='D')
+
+        self.args = parser.parse_args()
+
+        # Check applicable arguments for validity
+
+        if not os.access(self.args.input, os.R_OK):
+            err('input file not readable: %s' % self.args.input, exit=2)
+
+        self.mode = set()
+        for word in self.args.mode.split(','):
+            if word not in validmode[tool]:
+                err('invalid output mode: %s' % word, exit=2)
+            self.mode.add(word)
+
+        self.seg = False
+        if 'segword' in self.mode: self.seg = True
+        if 'segmorph' in self.mode: self.seg = True
+        if 'segphone' in self.mode: self.seg = True
+        self.tg = self.args.tg is not None
+
+        if self.args.model is None:
+            self.model = [m for m in models.itervalues() if 'default' in m][0]
+        elif self.args.model in models:
+            self.model = models[self.args.model]
+        else:
+            err('unknown acoustic model: %s' % self.args.model)
+            sys.stderr.write('supported models:\n')
+            for m in sorted(models.iterkeys()):
+                sys.stderr.write('  %s [sample rate: %d Hz]\n' % (m, models[m]['srate']))
+            sys.exit(2)
+        self.mpath = join(rootdir, 'model', self.model['path'])
+
+
+    def __enter__(self):
+        """Make a working directory for a single execution."""
+
+        self.workdir = tempfile.mkdtemp(prefix='aaltoasr', dir=self.args.tempdir)
+
+        return self
+
+    def __exit__(self, type, value, traceback):
+        """Clean up the working directory and any temporary files."""
+
+        if self.workdir.find('aaltoasr') >= 0: # sanity check
+            pass #shutil.rmtree(self.workdir)
+
+
+    def convert_input(self):
+        """Convert input audio to something suitable for the model."""
+
+        log('converting input audio file to %d Hz mono' % self.model['srate'])
+
+        audiofile = join(self.workdir, 'input.wav')
+
+        if call([bin('sox'), self.args.input,
+                 '-t', 'wav', '-r', str(self.model['srate']), '-2', '-s', '-c', '1',
+                 audiofile]) != 0:
+            err("input conversion of '%s' with sox failed" % self.args.input, exit=1)
+
+        self.audiofile = audiofile
+
+
+    def align(self):
+        """Do segmentation with the Viterbi alignment tool."""
+
+        self.convert_input()
+
+        log('computing Viterbi alignment')
+
+        recipe = join(self.workdir, 'align.recipe')
+        alignfile = join(self.workdir, 'align.phn')
+        outfile = join(self.workdir, 'align.out')
+
+        # Convert the transcription to a phoneme list
+
+        phones = text2phn(self.args.trans, self.workdir, expand=not self.args.noexp)
+        self.phones = phones
+
+        # Write out the cross-word triphone transcript
+
+        with open(alignfile, 'w') as f:
+            for pnum, para in enumerate(phones):
+                phns = para['phns']
+                f.write('__\n')
+                for phnum, ph in enumerate(phns):
+                    if ph == '_':
+                        f.write('_\n')
+                    else:
+                        prevph, nextph = '_', '_'
+                        for prev in xrange(phnum-1, -1, -1):
+                            if phns[prev] != '_': prevph = phns[prev]; break
+                        for next in xrange(phnum+1, len(phns)):
+                            if phns[next] != '_': nextph = phns[next]; break
+                        f.write('%s-%s+%s\n' % (prevph, ph, nextph))
+            f.write('__\n')
+
+        # Make a recipe for the alignment
+
+        with open(recipe, 'w') as f:
+            f.write('audio=%s transcript=%s alignment=%s' % (self.audiofile, alignfile, outfile))
+
+        # Run the Viterbi alignment
+
+        if call([bin('align'),
+                 '-b', self.mpath, '-c', self.mpath+'.cfg',
+                 '-i', '1',
+                 '-r', recipe], stdout=sys.stderr) != 0:
+            err('align failed', exit=1)
+
+        print(outfile)
+        self.alignment = outfile
+
+
+    def phone_probs(self):
+        """Create a LNA file for the provided audio."""
+
+        self.convert_input()
+
+        log('computing acoustic model likelihoods')
+
+        recipe = join(self.workdir, 'input.recipe')
+        lnafile = join(self.workdir, 'input.lna')
+
+        # Construct an input recipe
+
+        with open(recipe, 'w') as f:
+            f.write('audio=%s lna=%s\n' % (self.audiofile, lnafile))
+
+        # Run phone_probs on the file
+
+        if call([bin('phone_probs'),
+                 '-b', self.mpath, '-C', self.mpath+'.gcl', '-c', self.mpath+'.cfg',
+                 '--eval-ming', '0.2', '-i', '1',
+                 '-r', recipe], stdout=sys.stderr) != 0:
+            err('phone_probs failed', exit=1)
+
+        self.lna = lnafile
+
+
+    def rec(self):
+        """Run the recognizer for the generated LNA file."""
+
+        log('recognizing speech')
+
+        # Call rec.py on the lna file
+
+        recipe = join(self.workdir, 'rec.recipe')
+        with open(recipe, 'w') as f:
+            f.write('lna=%s\n' % basename(self.lna))
+
+        try:
+            print ' '.join([bin('rec.py'),
+                            rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale)])
+            rec_out = check_output([bin('rec.py'),
+                                    rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale)])
+        except CalledProcessError as e:
+            sys.stderr.write(e.output)
+            err('rec.py failed', exit=1)
+
+        # Parse the recognizer output to extract recognition result and state segmentation
+
+        rec_trans = None
+        rec_seg = []
+
+        re_trans = re.compile(r'^REC: (.*)$')
+        re_seg = re.compile(r'^(\d+) (\d+) (\d+)$')
+
+        for line in rec_out.splitlines():
+            m = re_trans.match(line)
+            if m is not None:
+                rec_trans = m.group(1)
+            m = re_seg.match(line)
+            if m is not None:
+                rec_seg.append(tuple(int(val) for val in m.group(1, 2, 3)))
+
+        if rec_trans is None:
+            sys.stderr.write(rec_out)
+            err('unable to find recognition transcript in output', exit=1)
+
+        # If necessary, find labels for states and write an alignment file
+
+        if self.seg or self.tg:
+            labels = get_labels(self.mpath + '.ph')
+            fstep = self.model['fstep']
+
+            alignment = join(self.workdir, 'rec.align')
+            with open(alignment, 'w') as f:
+                for start, end, state in rec_seg:
+                    f.write('%d %d %s\n' % (start*fstep, end*fstep, labels[state]))
+
+            self.alignment = alignment
+
+
+    def gen_output(self):
+        """Construct the requested outputs."""
+
+        # Start by parsing the state alignment into a phoneme segmentation
+
+        seg, tg = self.seg, self.tg
+
+        if seg or tg:
+            # Parse the raw state-level alignment
+
+            rawseg = []
+
+            re_line = re.compile(r'^(\d+) (\d+) ([^\.]+)\.(\d+)')
+            with open(self.alignment, 'r') as f:
+                for line in f:
+                    m = re_line.match(line)
+                    if m is None:
+                        err('invalid alignment line: %s' % line, exit=1)
+                    rawseg.append((int(m.group(1)), int(m.group(2)), m.group(3), int(m.group(4))))
+
+            # Recover the phoneme level segments from the state level alignment file.
+
+            phseg = []
+
+            cur_ph, cur_state = None, 0
+
+            for start, end, rawph, state in rawseg:
+                ph = trip2ph(rawph)
+
+                if ph == cur_ph and state == cur_state + 1:
+                    phseg[-1][1] = end
+                else:
+                    phseg.append([start, end, ph])
+
+                cur_ph, cur_state = ph, state
+
+            # Split into list of utterances.
+
+            uttseg = []
+
+            for issep, group in groupby(phseg, lambda item: item[2] == '__'):
+                if not issep:
+                    uttseg.append(list(group))
+
+        # Merge phoneme segmentation to words in transcript if aligning
+
+        if ('segword' in self.mode or tg) and self.tool == 'align':
+            if len(self.phones) != len(uttseg):
+                err('segmenter confused: utterance counts differ (%d != %d)' %
+                    (len(self.phones['words']), len(uttseg)), exit=1)
+
+            wordseg = []
+
+            for uttidx, seg in enumerate(uttseg):
+                wseg = []
+                phstack = list(seg)
+                for w in intersperse(self.phones[uttidx]['words'], '_'):
+                    start, end = 0, 0
+                    for phnum, ph in enumerate(w.replace('-', '_')):
+                        if ph != phstack[0][2]:
+                            err('segmenter confused: trans/align mismatch in utt %d word "%s"' % (uttidx+1, w), exit=1)
+                        if phnum == 0: start = phstack[0][0]
+                        end = phstack[0][1]
+                        phstack.pop(0)
+                    if w != '_': wseg.append((start, end, w))
+                wordseg.append(wseg)
+
+        # Generate requested plaintext outputs
+
+        out = self.args.output
+        srate = float(self.model['srate'])
+
+        out_started = [False]
+        def hdr(text):
+            if out_started[0]: out.write('\n\n\n')
+            out.write('### %s\n\n' % text)
+            out_started[0] = True
+
+        if 'segword' in self.mode:
+            hdr('Word-level segmentation:')
+            for utt in intersperse(wordseg, ()):
+                if len(utt) == 0: out.write('\n')
+                else:
+                    for start, end, w in utt:
+                        out.write('%.3f %.3f %s\n' % (start/srate, end/srate, w))
+
+        if 'segphone' in self.mode:
+            hdr('Phoneme-level segmentation:')
+            for utt in intersperse(uttseg, ()):
+                if len(utt) == 0: out.write('\n\n')
+                else:
+                    for start, end, ph in utt:
+                        if ph == '_': out.write('\n')
+                        else: out.write('%.3f %.3f %s\n' % (start/srate, end/srate, ph))
+
+# "Free-format" transcript to phoneme list conversion
+
+def text2phn(input, workdir, expand=True):
+    """Convert a transcription to a list of phonemes."""
+
+    # Read in, split to trimmed paragraphs.
+
+    try: input = input.read()
+    except: pass
+
+    if not type(input) is unicode:
+        try: input = input.decode('utf-8')
+        except UnicodeError:
+            input = input.decode('iso-8859-1')
+
+    input = filter(None, (re.sub(r'\s+', ' ', para.strip()) for para in input.split('\n\n')))
+
+    # Attempt to expand abbreviations etc., if requested.
+
+    if expand:
+        expander = join(rootdir, 'lavennin', 'bin', 'lavennin')
+        exp_in = join(workdir, 'expander_in.txt')
+        exp_out = join(workdir, 'expander_out.txt')
+
+        with open(exp_in, 'w') as f:
+            f.write(('\n'.join(input) + '\n').encode('iso-8859-1', 'ignore'))
+
+        if call([expander, workdir, exp_in, exp_out]) != 0:
+            err('transcript expansion script failed', exit=1)
+
+        with open(exp_out, 'r') as f:
+            input = filter(None, (para.strip().decode('iso-8859-1') for para in f.readlines()))
+
+    # Go from utterances to list of words.
+
+    input = [re.sub(r'\s+', ' ',
+                    re.sub('[^a-z\xe5\xe4\xf6 -]', '', para.lower().encode('iso-8859-1', 'ignore'))
+                    ).strip().split()
+             for para in input]
+
+    # Add phoneme lists.
+
+    return [{ 'words': para, 'phns': list('_'.join(para).replace('-', '_')) } for para in input]
+
+# Miscellaneous helpers
+
+def intersperse(iterable, delim):
+    """Haskell intersperse: return elements of iterable interspersed with delim."""
+
+    it = iter(iterable)
+    yield next(it)
+    for x in it:
+        yield delim
+        yield x
+
+def trip2ph(triphone):
+    if len(triphone) == 5: return triphone[2]
+    elif triphone == '__': return '__'
+    elif triphone[0] == '_': return '_'
+
+    err('unknown triphone: %s' % triphone, exit=1)
+
+def get_labels(phfile):
+    re_index = re.compile(r'^\d+ (\d+) (.*)')
+
+    labels = {}
+
+    with open(phfile, 'r') as ph:
+        if ph.readline() != 'PHONE\n': err('bad phoneme file: wrong header', exit=1)
+
+        phcount = int(ph.readline())
+
+        while True:
+            line = ph.readline().rstrip()
+            if not line: break
+
+            m = re_index.match(line)
+            if m is None:
+                err('bad phoneme file: wrong index line: %s' % line, exit=1)
+
+            phnstates = int(m.group(1))
+            phname = m.group(2)
+
+            line = ph.readline().strip()
+            phstates = [int(s) for s in line.split()]
+            if len(phstates) != phnstates:
+                err('bad phoneme file: wrong number of states', exit=1)
+
+            s = 0
+            for idx in phstates:
+                ph.readline() # skip the transition probs
+                if idx < 0: continue # dummy states don't need labels
+                labels[idx] = '%s.%d' % (phname, s)
+                s += 1
+
+    return labels
