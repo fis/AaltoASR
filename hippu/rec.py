@@ -6,7 +6,7 @@ import sys
 import os
 import re
 
-if len(sys.argv) != 6:
+if len(sys.argv) < 7 or len(sys.argv) > 8:
     sys.stderr.write('rec.py customized for aaltoasr-rec internal use only\n')
     sys.exit(1)
 
@@ -49,6 +49,10 @@ lm_scale = int(sys.argv[5])
 global_beam = 250
 num_batches = 1 #int(sys.argv[4])
 batch_index = 1 #int(sys.argv[5])
+
+do_phoneseg = int(sys.argv[6])
+morphseg_file = sys.argv[7] if len(sys.argv) == 8 else None
+
 ##################################################
 
 
@@ -105,7 +109,7 @@ t.set_require_sentence_end(1)
 
 t.set_verbose(1)
 t.set_print_text_result(1)
-t.set_print_state_segmentation(1)
+t.set_print_state_segmentation(do_phoneseg)
 t.set_lm_lookahead(1)
 
 word_end_beam = int(2*global_beam/3);
@@ -146,9 +150,15 @@ print "WORD_END_BEAM: ", word_end_beam
 print "LMSCALE: ", lm_scale
 print "DURSCALE: ", dur_scale
 
+if morphseg_file is not None:
+    t.set_generate_word_graph(1)
+
 for lnafile in lnafiles:
     t.lna_open(lna_path + lnafile, 1024)
 
     print "LNA:", lnafile
     print "REC: ",
     rec(0,-1)
+
+    if morphseg_file is not None:
+        t.write_word_history(morphseg_file)

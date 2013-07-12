@@ -7,7 +7,7 @@ import tempfile
 import textwrap
 from itertools import groupby
 from os.path import basename, join
-from subprocess import call, check_output, CalledProcessError
+from subprocess import call, check_output, CalledProcessError, STDOUT
 
 """Aalto ASR tools for CSC Hippu environment.
 
@@ -28,15 +28,6 @@ def bin(prog):
     return join(rootdir, 'bin', prog)
 
 default_lmscale = 30
-
-# General-purpose helpers for error messages and such
-
-def err(msg, exit=-1):
-    sys.stderr.write('%s: error: %s\n' % (basename(sys.argv[0]), msg))
-    if exit >= 0: sys.exit(exit)
-
-def log(msg):
-    sys.stderr.write('%s: %s\n' % (basename(sys.argv[0]), msg))
 
 # Class for implementing the rec/align tools
 
@@ -85,12 +76,17 @@ class AaltoASR(object):
                             default=defmode[tool])
         parser.add_argument('-T', '--tg', help='output also a Praat TextGrid segmentation to file', metavar='file',
                             type=argparse.FileType('w'), default=None)
+        if tool == 'rec':
+            parser.add_argument('-f', '--format', help='format recognizer output to remove morph breaks',
+                                action='store_true')
         parser.add_argument('-M', '--model', help='acoustic model to use; "-M ?" for list', metavar='M')
         parser.add_argument('--noexp', help='disable input transcript expansion', action='store_true')
         if tool == 'rec':
             parser.add_argument('-L', '--lmscale', help='language model scale factor [default %d]' % default_lmscale, metavar='L',
                                 type=int, default=default_lmscale)
         parser.add_argument('--tempdir', help='directory for temporary files', metavar='D')
+        parser.add_argument('-v', '--verbose', help='print output also from invoked commands', action='store_true')
+        parser.add_argument('-q', '--quiet', help='do not print status messages', action='store_true')
 
         self.args = parser.parse_args()
 
@@ -105,10 +101,6 @@ class AaltoASR(object):
                 err('invalid output mode: %s' % word, exit=2)
             self.mode.add(word)
 
-        self.seg = False
-        if 'segword' in self.mode: self.seg = True
-        if 'segmorph' in self.mode: self.seg = True
-        if 'segphone' in self.mode: self.seg = True
         self.tg = self.args.tg is not None
 
         if self.args.model is None:
@@ -141,7 +133,7 @@ class AaltoASR(object):
     def convert_input(self):
         """Convert input audio to something suitable for the model."""
 
-        log('converting input audio file to %d Hz mono' % self.model['srate'])
+        self.log('converting input audio file to %d Hz mono' % self.model['srate'])
 
         audiofile = join(self.workdir, 'input.wav')
 
@@ -158,7 +150,7 @@ class AaltoASR(object):
 
         self.convert_input()
 
-        log('computing Viterbi alignment')
+        self.log('computing Viterbi alignment')
 
         recipe = join(self.workdir, 'align.recipe')
         alignfile = join(self.workdir, 'align.phn')
@@ -194,13 +186,14 @@ class AaltoASR(object):
 
         # Run the Viterbi alignment
 
+        cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
+
         if call([bin('align'),
                  '-b', self.mpath, '-c', self.mpath+'.cfg',
                  '-i', '1',
-                 '-r', recipe], stdout=sys.stderr) != 0:
+                 '-r', recipe], stdout=cmd_out, stderr=cmd_out) != 0:
             err('align failed', exit=1)
 
-        print(outfile)
         self.alignment = outfile
 
 
@@ -209,7 +202,7 @@ class AaltoASR(object):
 
         self.convert_input()
 
-        log('computing acoustic model likelihoods')
+        self.log('computing acoustic model likelihoods')
 
         recipe = join(self.workdir, 'input.recipe')
         lnafile = join(self.workdir, 'input.lna')
@@ -221,10 +214,12 @@ class AaltoASR(object):
 
         # Run phone_probs on the file
 
+        cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
+
         if call([bin('phone_probs'),
                  '-b', self.mpath, '-C', self.mpath+'.gcl', '-c', self.mpath+'.cfg',
                  '--eval-ming', '0.2', '-i', '1',
-                 '-r', recipe], stdout=sys.stderr) != 0:
+                 '-r', recipe], stdout=cmd_out) != 0:
             err('phone_probs failed', exit=1)
 
         self.lna = lnafile
@@ -233,7 +228,7 @@ class AaltoASR(object):
     def rec(self):
         """Run the recognizer for the generated LNA file."""
 
-        log('recognizing speech')
+        self.log('recognizing speech')
 
         # Call rec.py on the lna file
 
@@ -242,13 +237,16 @@ class AaltoASR(object):
             f.write('lna=%s\n' % basename(self.lna))
 
         try:
-            print ' '.join([bin('rec.py'),
-                            rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale)])
-            rec_out = check_output([bin('rec.py'),
-                                    rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale)])
+            cmd = [bin('rec.py'),
+                   rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale),
+                   '1' if 'segphone' in self.mode or self.tg else '0']
+            if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
+                cmd.append(join(self.workdir, 'wordhist'))
+            cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
+            rec_out = check_output(cmd, stderr=cmd_out)
         except CalledProcessError as e:
             sys.stderr.write(e.output)
-            err('rec.py failed', exit=1)
+            err('rec.py failed %s %s' % (e.cmd, e.returncode), exit=1)
 
         # Parse the recognizer output to extract recognition result and state segmentation
 
@@ -270,11 +268,14 @@ class AaltoASR(object):
             sys.stderr.write(rec_out)
             err('unable to find recognition transcript in output', exit=1)
 
+        self.rec = rec_trans.strip()
+
+        fstep = self.model['fstep']
+
         # If necessary, find labels for states and write an alignment file
 
-        if self.seg or self.tg:
+        if 'segphone' in self.mode or self.tg:
             labels = get_labels(self.mpath + '.ph')
-            fstep = self.model['fstep']
 
             alignment = join(self.workdir, 'rec.align')
             with open(alignment, 'w') as f:
@@ -283,15 +284,36 @@ class AaltoASR(object):
 
             self.alignment = alignment
 
+        # If necessary, parse the generated word history file
+
+        if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
+            re_line = re.compile(r'^(\S+)\s+(\d+)')
+
+            with open(join(self.workdir, 'wordhist'), 'r') as f:
+                morphseg = []
+                prev_end = 0
+
+                for line in f:
+                    m = re_line.match(line)
+                    if m is None: continue # skip malformed
+                    morph, end = m.group(1), int(m.group(2))
+                    morphseg.append((prev_end*fstep, end*fstep, morph))
+                    prev_end = end
+
+            while len(morphseg) > 0 and (morphseg[0][2] == '<s>' or morphseg[0][2] == '<w>'):
+                morphseg.pop(0)
+            while len(morphseg) > 0 and (morphseg[-1][2] == '</s>' or morphseg[-1][2] == '<w>'):
+                morphseg.pop()
+
+            self.morphseg = morphseg
+
 
     def gen_output(self):
         """Construct the requested outputs."""
 
         # Start by parsing the state alignment into a phoneme segmentation
 
-        seg, tg = self.seg, self.tg
-
-        if seg or tg:
+        if 'segphone' in self.mode or ('segword' in self.mode and self.tool == 'align') or self.tg:
             # Parse the raw state-level alignment
 
             rawseg = []
@@ -304,7 +326,7 @@ class AaltoASR(object):
                         err('invalid alignment line: %s' % line, exit=1)
                     rawseg.append((int(m.group(1)), int(m.group(2)), m.group(3), int(m.group(4))))
 
-            # Recover the phoneme level segments from the state level alignment file.
+            # Recover the phoneme level segments from the state level alignment file
 
             phseg = []
 
@@ -314,13 +336,19 @@ class AaltoASR(object):
                 ph = trip2ph(rawph)
 
                 if ph == cur_ph and state == cur_state + 1:
+                    # Hack: try to fix cases where the first state of a phoneme after a long silence
+                    # actually includes (most of) the silence too.  Ditto for last states.
+                    if rawph.startswith('_-') and state == 1 and start - phseg[-1][0] > 2*(end-start):
+                        phseg[-1][0] = start
+                    if rawph.endswith('+_') and state == 2 and end - start > 2*(start - phseg[-1][0]):
+                        continue # don't update end
                     phseg[-1][1] = end
                 else:
                     phseg.append([start, end, ph])
 
                 cur_ph, cur_state = ph, state
 
-            # Split into list of utterances.
+            # Split into list of utterances
 
             uttseg = []
 
@@ -330,7 +358,7 @@ class AaltoASR(object):
 
         # Merge phoneme segmentation to words in transcript if aligning
 
-        if ('segword' in self.mode or tg) and self.tool == 'align':
+        if ('segword' in self.mode or self.tg) and self.tool == 'align':
             if len(self.phones) != len(uttseg):
                 err('segmenter confused: utterance counts differ (%d != %d)' %
                     (len(self.phones['words']), len(uttseg)), exit=1)
@@ -351,6 +379,23 @@ class AaltoASR(object):
                     if w != '_': wseg.append((start, end, w))
                 wordseg.append(wseg)
 
+        # Merge morpheme segmentation into words if required
+
+        if ('segword' in self.mode or self.tg) and self.tool == 'rec':
+            wordseg = []
+
+            for issep, group in groupby(self.morphseg, lambda item: item[2] == '<s>' or item[2] == '</s>'):
+                if issep: continue
+
+                utt = []
+
+                for issep, wordgroup in groupby(group, lambda item: item[2] == '<w>'):
+                    if issep: continue
+                    word = list(wordgroup)
+                    utt.append((word[0][0], word[-1][1], ''.join(m[2] for m in word)))
+
+                wordseg.append(utt)
+
         # Generate requested plaintext outputs
 
         out = self.args.output
@@ -362,6 +407,18 @@ class AaltoASR(object):
             out.write('### %s\n\n' % text)
             out_started[0] = True
 
+        if 'trans' in self.mode:
+            hdr('Recognizer transcript:')
+            if self.args.format:
+                for utt in self.rec.split('<s>'):
+                    utt = utt.replace('</s>', '')
+                    utt = utt.replace(' ', '')
+                    utt = utt.replace('<w>', ' ').strip()
+                    if len(utt) > 0:
+                        out.write('%s\n' % utt)
+            else:
+                out.write('%s\n' % self.rec)
+
         if 'segword' in self.mode:
             hdr('Word-level segmentation:')
             for utt in intersperse(wordseg, ()):
@@ -369,6 +426,13 @@ class AaltoASR(object):
                 else:
                     for start, end, w in utt:
                         out.write('%.3f %.3f %s\n' % (start/srate, end/srate, w))
+
+        if 'segmorph' in self.mode:
+            hdr('Morpheme[*]-level segmentation:   ([*] statistical)')
+            for start, end, morph in self.morphseg:
+                if morph == '<s>' or morph == '</s>': continue
+                elif morph == '<w>': out.write('\n')
+                else: out.write('%.3f %.3f %s\n' % (start/srate, end/srate, morph))
 
         if 'segphone' in self.mode:
             hdr('Phoneme-level segmentation:')
@@ -379,12 +443,102 @@ class AaltoASR(object):
                         if ph == '_': out.write('\n')
                         else: out.write('%.3f %.3f %s\n' % (start/srate, end/srate, ph))
 
+        # Generate Praat TextGrid output
+
+        if self.tg:
+            tgfile = self.args.tg
+
+            tgfile.write(('''
+File type = "ooTextFile"
+Object class = "TextGrid"
+
+xmin = %.3f
+xmax = %.3f
+tiers? <exists>
+size = %d
+item []:
+''' % (min(uttseg[0][0][0], wordseg[0][0][0]) / srate,
+       max(uttseg[-1][-1][1], wordseg[-1][-1][1]) / srate,
+       4 if self.tool == 'rec' else 3)).lstrip())
+
+            tierno = 1
+
+            # Utterance tier
+
+            tgfile.write('    item[%d]:\n' % tierno); tierno += 1
+            tgfile.write('        class = "IntervalTier"\n')
+            tgfile.write('        name = "utterance"\n')
+            tgfile.write('        xmin = %.3f\n' % (wordseg[0][0][0] / srate))
+            tgfile.write('        xmax = %.3f\n' % (wordseg[-1][-1][1] / srate))
+            tgfile.write('        intervals: size = %d\n' % len(wordseg))
+
+            for uttnum, utt in enumerate(wordseg):
+                tgfile.write('        intervals [%d]:\n' % (uttnum+1))
+                tgfile.write('            xmin = %.3f\n' % (utt[0][0] / srate))
+                tgfile.write('            xmax = %.3f\n' % (utt[-1][1] / srate))
+                tgfile.write('            text = "%s"\n' % ' '.join(w[2] for w in utt))
+
+            # Word tier
+
+            tgfile.write('    item[%d]:\n' % tierno); tierno += 1
+            tgfile.write('        class = "IntervalTier"\n')
+            tgfile.write('        name = "word"\n')
+            tgfile.write('        xmin = %.3f\n' % (wordseg[0][0][0] / srate))
+            tgfile.write('        xmax = %.3f\n' % (wordseg[-1][-1][1] / srate))
+            tgfile.write('        intervals: size = %d\n' % sum(len(utt) for utt in wordseg))
+
+            for wnum, word in enumerate(w for utt in wordseg for w in utt):
+                tgfile.write('        intervals [%d]:\n' % (wnum+1))
+                tgfile.write('            xmin = %.3f\n' % (word[0] / srate))
+                tgfile.write('            xmax = %.3f\n' % (word[1] / srate))
+                tgfile.write('            text = "%s"\n' % word[2])
+
+            # Morph tier
+
+            if self.tool == 'rec':
+                fmorphseg = [morph for morph in self.morphseg if morph[2][0] != '<']
+
+                tgfile.write('    item[%d]:\n' % tierno); tierno += 1
+                tgfile.write('        class = "IntervalTier"\n')
+                tgfile.write('        name = "morph"\n')
+                tgfile.write('        xmin = %.3f\n' % (fmorphseg[0][0] / srate))
+                tgfile.write('        xmax = %.3f\n' % (fmorphseg[-1][1] / srate))
+                tgfile.write('        intervals: size = %d\n' % len(fmorphseg))
+
+                for morphnum, morph in enumerate(fmorphseg):
+                    tgfile.write('        intervals [%d]:\n' % (morphnum+1))
+                    tgfile.write('            xmin = %.3f\n' % (morph[0] / srate))
+                    tgfile.write('            xmax = %.3f\n' % (morph[1] / srate))
+                    tgfile.write('            text = "%s"\n' % morph[2])
+
+            # Phoneme tier
+
+            fphseg = [ph for ph in phseg if ph[2][0] != '_']
+
+            tgfile.write('    item[%d]:\n' % tierno); tierno += 1
+            tgfile.write('        class = "IntervalTier"\n')
+            tgfile.write('        name = "phone"\n')
+            tgfile.write('        xmin = %.3f\n' % (fphseg[0][0] / srate))
+            tgfile.write('        xmax = %.3f\n' % (fphseg[-1][1] / srate))
+            tgfile.write('        intervals: size = %d\n' % len(fphseg))
+
+            for phnum, ph in enumerate(fphseg):
+                tgfile.write('        intervals [%d]:\n' % (phnum+1))
+                tgfile.write('            xmin = %.3f\n' % (ph[0] / srate))
+                tgfile.write('            xmax = %.3f\n' % (ph[1] / srate))
+                tgfile.write('            text = "%s"\n' % ph[2])
+
+
+    def log(self, msg):
+        if not self.args.quiet:
+            sys.stderr.write('%s: %s\n' % (basename(sys.argv[0]), msg))
+
 # "Free-format" transcript to phoneme list conversion
 
 def text2phn(input, workdir, expand=True):
     """Convert a transcription to a list of phonemes."""
 
-    # Read in, split to trimmed paragraphs.
+    # Read in, split to trimmed paragraphs
 
     try: input = input.read()
     except: pass
@@ -396,7 +550,7 @@ def text2phn(input, workdir, expand=True):
 
     input = filter(None, (re.sub(r'\s+', ' ', para.strip()) for para in input.split('\n\n')))
 
-    # Attempt to expand abbreviations etc., if requested.
+    # Attempt to expand abbreviations etc., if requested
 
     if expand:
         expander = join(rootdir, 'lavennin', 'bin', 'lavennin')
@@ -412,18 +566,22 @@ def text2phn(input, workdir, expand=True):
         with open(exp_out, 'r') as f:
             input = filter(None, (para.strip().decode('iso-8859-1') for para in f.readlines()))
 
-    # Go from utterances to list of words.
+    # Go from utterances to list of words
 
     input = [re.sub(r'\s+', ' ',
                     re.sub('[^a-z\xe5\xe4\xf6 -]', '', para.lower().encode('iso-8859-1', 'ignore'))
                     ).strip().split()
              for para in input]
 
-    # Add phoneme lists.
+    # Add phoneme lists
 
     return [{ 'words': para, 'phns': list('_'.join(para).replace('-', '_')) } for para in input]
 
 # Miscellaneous helpers
+
+def err(msg, exit=-1):
+    sys.stderr.write('%s: error: %s\n' % (basename(sys.argv[0]), msg))
+    if exit >= 0: sys.exit(exit)
 
 def intersperse(iterable, delim):
     """Haskell intersperse: return elements of iterable interspersed with delim."""
