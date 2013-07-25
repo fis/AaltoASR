@@ -18,7 +18,7 @@ CSC Hippu environment.
 
 # Overall settings and paths to data files
 
-rootdir = '/home/htkallas/hippu/root'
+rootdir = '/akulabra/home/t40511/htkallas/aaltoasr'
 models = {
     '16k': { 'path': 'speecon_mfcc_gain3500_occ225_1.11.2007_20', 'srate': 16000, 'fstep': 128, 'default': 1 },
     '8k': { 'path': 'speechdat_mfcc_gain4000_occ350_13.2.2008_20', 'srate': 8000, 'fstep': 128 }
@@ -127,7 +127,7 @@ class AaltoASR(object):
         """Clean up the working directory and any temporary files."""
 
         if self.workdir.find('aaltoasr') >= 0: # sanity check
-            pass #shutil.rmtree(self.workdir)
+            shutil.rmtree(self.workdir)
 
 
     def convert_input(self):
@@ -138,7 +138,7 @@ class AaltoASR(object):
         audiofile = join(self.workdir, 'input.wav')
 
         if call([bin('sox'), self.args.input,
-                 '-t', 'wav', '-r', str(self.model['srate']), '-2', '-s', '-c', '1',
+                 '-t', 'wav', '-r', str(self.model['srate']), '-b', '16', '-e', 'signed-integer', '-c', '1',
                  audiofile]) != 0:
             err("input conversion of '%s' with sox failed" % self.args.input, exit=1)
 
