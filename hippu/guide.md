@@ -1,6 +1,16 @@
 # aaltoasr-rec / aaltoasr-align User's Guide
 
-**TODO: testing phase instructions.**
+**Testing on hippu.csc.fi (hippu3, hippu4):** Type
+
+    source /v/users/htkallas/aaltoasr/init.sh
+
+to set things up.
+
+**Testing on Aalto/SPA system:** Type
+
+    source /akulabra/home/t40511/htkallas/aaltoasr/init.sh
+
+to set things up.
 
 ## Introduction
 
@@ -8,7 +18,7 @@
 using the [AaltoASR][aaltoasr] tools for simple speech recognition and
 segmentation (forced-alignment) tasks.
 
-**(TODO: not done yet.)**
+**(TODO: not installed to the Hippu module system yet.)**
 To use the tools, load them in your path with `module load aaltoasr`.
 
 [aaltoasr]: https://github.com/aalto-speech/AaltoASR "AaltoASR github page"
@@ -105,7 +115,3 @@ Print output also from the recognition/alignment tools.
 
 * **-q, --quiet**  
 Do not print any status messages, only the final results.
-
-## Technical details
-
-Foo.
