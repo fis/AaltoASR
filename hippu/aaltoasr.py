@@ -79,7 +79,7 @@ class AaltoASR(object):
         parser.add_argument('-T', '--tg', help='output also a Praat TextGrid segmentation to file', metavar='file',
                             type=argparse.FileType('w'), default=None)
         if tool == 'rec':
-            parser.add_argument('-f', '--format', help='format recognizer output to remove morph breaks',
+            parser.add_argument('-r', '--raw', help='produce raw recognizer output (with morph breaks)',
                                 action='store_true')
         parser.add_argument('-M', '--model', help='acoustic model to use; "-M ?" for list', metavar='M')
         parser.add_argument('--noexp', help='disable input transcript expansion', action='store_true')
@@ -412,7 +412,7 @@ class AaltoASR(object):
 
         if 'trans' in self.mode:
             hdr('Recognizer transcript:')
-            if self.args.format:
+            if not self.args.raw:
                 for utt in self.rec.split('<s>'):
                     utt = utt.replace('</s>', '')
                     utt = utt.replace(' ', '')
