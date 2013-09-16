@@ -12,6 +12,8 @@ to set things up.
 
 to set things up.
 
+(If your shell is not bash, try typing `bash` first.)
+
 ## Introduction
 
 `aaltoasr-rec` and `aaltoasr-align` are two command-line scripts for
@@ -100,7 +102,10 @@ human-readable format, by removing morph breaks and changing word
 break tags to spaces.
 
 * **-M *model*, --model *model***  
-Select *model* as the acoustic model.  Use `-M '?'` for a list.
+Select *model* as the acoustic model.  The default is `16k`.  The
+following models are known:
+    * `16k`: 16 kHz (slightly) multicondition SPEECON model.
+    * `8k`: 8 kHz SPEECHDAT model.
 
 * **-L *L*, --lmscale *L*** (`aaltoasr-rec` only)  
 Use *L* as the scale factor for language model probabilities.
@@ -115,3 +120,7 @@ Print output also from the recognition/alignment tools.
 
 * **-q, --quiet**  
 Do not print any status messages, only the final results.
+
+## Technical details
+
+TODO: internals documentation.
