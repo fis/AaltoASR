@@ -1,18 +1,21 @@
 # aaltoasr-rec / aaltoasr-align User's Guide
 
-**Testing on hippu.csc.fi (hippu3, hippu4):** Type
+**Testing the beta version:**
+
+To set things up, type one of the following, depending on the
+environment.  (If your shell is not bash, try typing `bash` first.)
+
+**hippu.csc.fi (hippu3, hippu4):**
 
     source /v/users/htkallas/aaltoasr/init.sh
 
-to set things up.
-
-**Testing on Aalto/SPA system:** Type
+**Aalto/SPA systems:**
 
     source /akulabra/home/t40511/htkallas/aaltoasr/init.sh
 
-to set things up.
+**Aalto/ICS workstations:**
 
-(If your shell is not bash, try typing `bash` first.)
+    source /share/puhe/htkallas/aaltoasr/init.sh
 
 ## Introduction
 
