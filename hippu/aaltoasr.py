@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import argparse
 import os
 import re
@@ -104,13 +106,13 @@ class AaltoASR(object):
         self.tg = self.args.tg is not None
 
         if self.args.model is None:
-            self.model = [m for m in models.itervalues() if 'default' in m][0]
+            self.model = [m for m in models.values() if 'default' in m][0]
         elif self.args.model in models:
             self.model = models[self.args.model]
         else:
             err('unknown acoustic model: %s' % self.args.model)
             sys.stderr.write('supported models:\n')
-            for m in sorted(models.iterkeys()):
+            for m in sorted(models.keys()):
                 sys.stderr.write('  %s [sample rate: %d Hz]\n' % (m, models[m]['srate']))
             sys.exit(2)
         self.mpath = join(rootdir, 'model', self.model['path'])
@@ -163,7 +165,7 @@ class AaltoASR(object):
 
         # Write out the cross-word triphone transcript
 
-        with open(alignfile, 'w') as f:
+        with open(alignfile, 'w', encoding='iso-8859-1') as f:
             for pnum, para in enumerate(phones):
                 phns = para['phns']
                 f.write('__\n')
@@ -172,9 +174,9 @@ class AaltoASR(object):
                         f.write('_\n')
                     else:
                         prevph, nextph = '_', '_'
-                        for prev in xrange(phnum-1, -1, -1):
+                        for prev in range(phnum-1, -1, -1):
                             if phns[prev] != '_': prevph = phns[prev]; break
-                        for next in xrange(phnum+1, len(phns)):
+                        for next in range(phnum+1, len(phns)):
                             if phns[next] != '_': nextph = phns[next]; break
                         f.write('%s-%s+%s\n' % (prevph, ph, nextph))
             f.write('__\n')
@@ -244,6 +246,7 @@ class AaltoASR(object):
                 cmd.append(join(self.workdir, 'wordhist'))
             cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
             rec_out = check_output(cmd, stderr=cmd_out)
+            rec_out = rec_out.decode('iso-8859-1')
         except CalledProcessError as e:
             sys.stderr.write(e.output)
             err('rec.py failed %s %s' % (e.cmd, e.returncode), exit=1)
@@ -278,7 +281,7 @@ class AaltoASR(object):
             labels = get_labels(self.mpath + '.ph')
 
             alignment = join(self.workdir, 'rec.align')
-            with open(alignment, 'w') as f:
+            with open(alignment, 'w', encoding='iso-8859-1') as f:
                 for start, end, state in rec_seg:
                     f.write('%d %d %s\n' % (start*fstep, end*fstep, labels[state]))
 
@@ -289,7 +292,7 @@ class AaltoASR(object):
         if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
             re_line = re.compile(r'^(\S+)\s+(\d+)')
 
-            with open(join(self.workdir, 'wordhist'), 'r') as f:
+            with open(join(self.workdir, 'wordhist'), 'r', encoding='iso-8859-1') as f:
                 morphseg = []
                 prev_end = 0
 
@@ -319,7 +322,7 @@ class AaltoASR(object):
             rawseg = []
 
             re_line = re.compile(r'^(\d+) (\d+) ([^\.]+)\.(\d+)')
-            with open(self.alignment, 'r') as f:
+            with open(self.alignment, 'r', encoding='iso-8859-1') as f:
                 for line in f:
                     m = re_line.match(line)
                     if m is None:
@@ -543,7 +546,7 @@ def text2phn(input, workdir, expand=True):
     try: input = input.read()
     except: pass
 
-    if not type(input) is unicode:
+    if not type(input) is str:
         try: input = input.decode('utf-8')
         except UnicodeError:
             input = input.decode('iso-8859-1')
@@ -557,19 +560,19 @@ def text2phn(input, workdir, expand=True):
         exp_in = join(workdir, 'expander_in.txt')
         exp_out = join(workdir, 'expander_out.txt')
 
-        with open(exp_in, 'w') as f:
-            f.write(('\n'.join(input) + '\n').encode('iso-8859-1', 'ignore'))
+        with open(exp_in, 'w', encoding='iso-8859-1') as f:
+            f.write('\n'.join(input) + '\n')
 
         if call([expander, workdir, exp_in, exp_out]) != 0:
             err('transcript expansion script failed', exit=1)
 
-        with open(exp_out, 'r') as f:
-            input = filter(None, (para.strip().decode('iso-8859-1') for para in f.readlines()))
+        with open(exp_out, 'r', encoding='iso-8859-1') as f:
+            input = filter(None, (para.strip() for para in f.readlines()))
 
     # Go from utterances to list of words
 
     input = [re.sub(r'\s+', ' ',
-                    re.sub('[^a-z\xe5\xe4\xf6 -]', '', para.lower().encode('iso-8859-1', 'ignore'))
+                    re.sub('[^a-zåäö -]', '', para.lower())
                     ).strip().split()
              for para in input]
 
@@ -604,7 +607,7 @@ def get_labels(phfile):
 
     labels = {}
 
-    with open(phfile, 'r') as ph:
+    with open(phfile, 'r', encoding='iso-8859-1') as ph:
         if ph.readline() != 'PHONE\n': err('bad phoneme file: wrong header', exit=1)
 
         phcount = int(ph.readline())
@@ -612,6 +615,7 @@ def get_labels(phfile):
         while True:
             line = ph.readline().rstrip()
             if not line: break
+            line = line
 
             m = re_index.match(line)
             if m is None:
