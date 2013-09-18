@@ -214,7 +214,9 @@ class AaltoASR(object):
 
         if call([bin('align'),
                  '-b', self.mpath, '-c', self.mpath+'.cfg',
-                 #'--swins', '2000',
+                 '--swins', str(self.args.align_window),
+                 '--beam', str(self.args.align_beam),
+                 '--sbeam', str(self.args.align_sbeam),
                  '-i', '1',
                  '-r', recipe], stdout=cmd_out, stderr=cmd_out) != 0:
             err('align failed', exit=1)
