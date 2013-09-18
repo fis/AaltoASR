@@ -2,14 +2,17 @@
 
 import argparse
 import os
+import math
 import re
 import shutil
+import struct
 import sys
 import tempfile
 import textwrap
 from itertools import groupby
 from os.path import basename, join
-from subprocess import call, check_output, CalledProcessError, STDOUT
+import subprocess
+from subprocess import call, check_output
 
 """Aalto ASR tools for CSC Hippu environment.
 
@@ -92,6 +95,9 @@ class AaltoASR(object):
         parser.add_argument('-T', '--tg', help='output also a Praat TextGrid segmentation to file', metavar='file',
                             type=argparse.FileType('w'), default=None)
         if tool == 'rec':
+            parser.add_argument('-s', '--split',
+                                help='split input file to segments of about S seconds [default %(const)s if present]',
+                                metavar='S', nargs='?', type=float, default=None, const=60.0)
             parser.add_argument('-r', '--raw', help='produce raw recognizer output (with morph breaks)',
                                 action='store_true')
         parser.add_argument('-v', '--verbose', help='print output also from invoked commands', action='store_true')
@@ -157,16 +163,20 @@ class AaltoASR(object):
     def convert_input(self):
         """Convert input audio to something suitable for the model."""
 
-        self.log('converting input audio file to %d Hz mono' % self.model['srate'])
+        if self.args.split is not None:
+            self.log('splitting input audio to {0}-second segments'.format(self.args.split))
+            self.audiofiles = split_audio(self.args.split, self.args.input, self.workdir, self.model)
+        else:
+            self.log('converting input audio file to %d Hz mono' % self.model['srate'])
 
-        audiofile = join(self.workdir, 'input.wav')
+            audiofile = join(self.workdir, 'input.wav')
 
-        if call([bin('sox'), self.args.input,
-                 '-t', 'wav', '-r', str(self.model['srate']), '-b', '16', '-e', 'signed-integer', '-c', '1',
-                 audiofile]) != 0:
-            err("input conversion of '%s' with sox failed" % self.args.input, exit=1)
+            if call([bin('sox'), self.args.input,
+                     '-t', 'wav', '-r', str(self.model['srate']), '-b', '16', '-e', 'signed-integer', '-c', '1',
+                     audiofile]) != 0:
+                err("input conversion of '%s' with sox failed" % self.args.input, exit=1)
 
-        self.audiofiles = [{ 'start': 0, 'file': audiofile }]
+            self.audiofiles = [{ 'start': 0, 'file': audiofile }]
 
 
     def align(self):
@@ -211,7 +221,7 @@ class AaltoASR(object):
 
         # Run the Viterbi alignment
 
-        cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
+        cmd_out = sys.stderr if self.args.verbose else subprocess.DEVNULL
 
         if call([bin('align'),
                  '-b', self.mpath, '-c', self.mpath+'.cfg',
@@ -245,7 +255,7 @@ class AaltoASR(object):
 
         # Run phone_probs on the files
 
-        cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
+        cmd_out = sys.stderr if self.args.verbose else subprocess.DEVNULL
 
         if call([bin('phone_probs'),
                  '-b', self.mpath, '-C', self.mpath+'.gcl', '-c', self.mpath+'.cfg',
@@ -278,17 +288,17 @@ class AaltoASR(object):
                    '1' if 'segphone' in self.mode or self.tg else '0']
             if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
                 cmd.append(join(self.workdir, 'wordhist'))
-            cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
+            cmd_out = sys.stderr if self.args.verbose else subprocess.DEVNULL
             rec_out = check_output(cmd, stderr=cmd_out)
             rec_out = rec_out.decode('iso-8859-1')
-        except CalledProcessError as e:
+        except subprocess.CalledProcessError as e:
             sys.stderr.write(e.output)
             err('rec.py failed %s %s' % (e.cmd, e.returncode), exit=1)
 
         # Parse the recognizer output to extract recognition result and state segmentation
 
         rec_start = 0
-        rec_trans = None
+        rec_trans = []
         rec_seg = []
 
         re_lna = re.compile(r'^LNA: (.*)$')
@@ -302,7 +312,7 @@ class AaltoASR(object):
                 continue
             m = re_trans.match(line)
             if m is not None:
-                rec_trans = m.group(1)
+                rec_trans.append(m.group(1))
                 continue
             m = re_seg.match(line)
             if m is not None:
@@ -310,9 +320,11 @@ class AaltoASR(object):
                 rec_seg.append((rec_start+int(start), rec_start+int(end), int(state)))
                 continue
 
-        if rec_trans is None:
+        if not rec_trans:
             sys.stderr.write(rec_out)
             err('unable to find recognition transcript in output', exit=1)
+
+        rec_trans = ' <w> '.join(rec_trans)
 
         self.rec = rec_trans.strip()
 
@@ -341,7 +353,7 @@ class AaltoASR(object):
                 file_start = audiofile['start']
                 prev_end = file_start
 
-                with open(join(self.workdir, 'wordhist'), 'r', encoding='iso-8859-1') as f:
+                with open(join(self.workdir, 'wordhist-{0}'.format(idx)), 'r', encoding='iso-8859-1') as f:
                     for line in f:
                         m = re_line.match(line)
                         if m is None: continue # skip malformed
@@ -687,3 +699,83 @@ def get_labels(phfile):
                 s += 1
 
     return labels
+
+def split_audio(seglen, infile, workdir, model):
+    """Split an input audio file to approximately seglen-second segments,
+    at more or less silent positions if possible.  Frame size used when
+    splitting will match the frame size of the model, and the output list
+    gives start offsets of the segments in terms of that.
+    """
+
+    # compute target segment length in frames
+
+    srate = model['srate']
+    framesize = model['fstep']
+    segframes = int(seglen * srate / framesize)
+
+    # generate frame energy mapping for the input audio
+
+    raw_energy = []
+
+    with subprocess.Popen([bin('sox'), infile,
+                           '-t', 'raw', '-r', str(srate), '-b', '16', '-e', 'signed-integer', '-c', '1',
+                           '-'],
+                          stdout=subprocess.PIPE) as sox:
+        while True:
+            frame = sox.stdout.read(2*framesize)
+            if len(frame) < 2*framesize:
+                break
+            frame = struct.unpack('={0}h'.format(framesize), frame)
+
+            mean = float(sum(frame)) / len(frame)
+            raw_energy.append(math.sqrt(sum((s-mean)**2 for s in frame)))
+
+    if not raw_energy:
+        err("input conversion of '{0}' with sox resulted in no frames".format(infile), exit=1)
+
+    # moving-average smoothing for the energy
+
+    energy = [0.0]*len(raw_energy)
+
+    for i in range(len(energy)):
+        wnd = raw_energy[max(i-10,0):i+11]
+        energy[i] = sum(wnd)/len(wnd)
+
+    # determine splitting positions
+
+    segments = []
+    at = 0
+
+    while at < len(energy):
+        left = len(energy) - at
+
+        if left <= 1.5 * segframes:
+            take = left
+        else:
+            minpos = max(0, int(at + 0.8*segframes))
+            maxpos = min(len(energy), int(at + 1.2*segframes))
+            pos = minpos + min(enumerate(energy[minpos:maxpos]), key=lambda v: v[1])[0]
+            take = pos - at
+
+        segments.append((at, at+take))
+        at += take
+
+    # generate the resulting audio files
+
+    audiofiles = []
+
+    for i, (start, end) in enumerate(segments):
+        starts = start*framesize
+        lens = (end-start)*framesize
+
+        audiofile = join(workdir, 'input-{0}.wav'.format(i))
+
+        if call([bin('sox'), infile,
+                 '-t', 'wav', '-r', str(srate), '-b', '16', '-e', 'signed-integer', '-c', '1',
+                 audiofile,
+                 'trim', str(starts)+'s', str(lens)+'s']) != 0:
+            err("input conversion of '{0}' (frames {1}-{2}) with sox failed".format(infile, start, end), exit=1)
+
+        audiofiles.append({ 'start': start, 'file': audiofile })
+
+    return audiofiles

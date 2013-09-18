@@ -153,7 +153,7 @@ print "DURSCALE: ", dur_scale
 if morphseg_file is not None:
     t.set_generate_word_graph(1)
 
-for lnafile in lnafiles:
+for idx, lnafile in enumerate(lnafiles):
     t.lna_open(lna_path + lnafile, 1024)
 
     print "LNA:", lnafile
@@ -161,4 +161,4 @@ for lnafile in lnafiles:
     rec(0,-1)
 
     if morphseg_file is not None:
-        t.write_word_history(morphseg_file)
+        t.write_word_history('%s-%d' % (morphseg_file, idx))
