@@ -29,7 +29,13 @@ models = {
 def bin(prog):
     return join(rootdir, 'bin', prog)
 
-default_lmscale = 30
+default_args = {
+    'model': [m for m, s in models.items() if 'default' in s][0],
+    'lmscale': 30,
+    'align-window': 1000,
+    'align-beam': 100.0,
+    'align-sbeam': 100,
+    }
 
 # Command-line help
 
@@ -37,7 +43,7 @@ help = {
     'rec': {
         'desc': 'Recognize speech from an audio file.',
         'usage': '%(prog)s [options] input',
-        'modes': set(('trans', 'segword', 'segmorph', 'segphone')),
+        'modes': ('trans', 'segword', 'segmorph', 'segphone'),
         'defmode': 'trans',
         'extra': ('The MODE parameter specifies which results to include in the generated output.  '
                   'It has the form of a comma-separated list of the terms "trans", "segword", '
@@ -50,7 +56,7 @@ help = {
     'align': {
         'desc': 'Align a transcription to a speech audio file.',
         'usage': '%(prog)s [options] -t transcript input',
-        'modes': set(('segword', 'segphone')),
+        'modes': ('segword', 'segphone'),
         'defmode': 'segword',
         'extra': ('The MODE parameter specifies which results to include in the generated output. '
                   'It has the form of a comma-separated list of the terms "segword" and "segphone", '
@@ -88,14 +94,25 @@ class AaltoASR(object):
         if tool == 'rec':
             parser.add_argument('-r', '--raw', help='produce raw recognizer output (with morph breaks)',
                                 action='store_true')
-        parser.add_argument('-M', '--model', help='acoustic model to use; "-M ?" for list', metavar='M')
-        parser.add_argument('--noexp', help='disable input transcript expansion', action='store_true')
-        if tool == 'rec':
-            parser.add_argument('-L', '--lmscale', help='language model scale factor [default %d]' % default_lmscale, metavar='L',
-                                type=int, default=default_lmscale)
-        parser.add_argument('--tempdir', help='directory for temporary files', metavar='D')
         parser.add_argument('-v', '--verbose', help='print output also from invoked commands', action='store_true')
         parser.add_argument('-q', '--quiet', help='do not print status messages', action='store_true')
+        parser.add_argument('--tempdir', help='directory for temporary files', metavar='D')
+
+        params = parser.add_argument_group('speech recognition parameters')
+        params.add_argument('-M', '--model', help='acoustic model to use; "-M ?" for list [default "%(default)s"]',
+                            metavar='M', default=default_args['model'])
+        if tool == 'rec':
+            params.add_argument('-L', '--lmscale', help='language model scale factor [default %(default)s]', metavar='L',
+                                type=int, default=default_args['lmscale'])
+        if tool == 'align':
+            params.add_argument('--align-window',
+                                help='set the Viterbi window for alignment [default %(default)s]', metavar='W',
+                                type=int, default=default_args['align-window'])
+            params.add_argument('--align-beam', help='set alignment log-probability beam [default %(default)s]', metavar='B',
+                                type=float, default=default_args['align-beam'])
+            params.add_argument('--align-sbeam', help='set alignment state beam [default %(default)s]', metavar='S',
+                                type=int, default=default_args['align-sbeam'])
+        params.add_argument('--noexp', help='disable input transcript expansion', action='store_true')
 
         self.args = parser.parse_args()
 
@@ -107,14 +124,12 @@ class AaltoASR(object):
         self.mode = set()
         for word in self.args.mode.split(','):
             if word not in thelp['modes']:
-                err('invalid output mode: %s' % word, exit=2)
+                err('invalid output mode: %s; valid: %s' % (word, ', '.join(thelp['modes'])), exit=2)
             self.mode.add(word)
 
         self.tg = self.args.tg is not None
 
-        if self.args.model is None:
-            self.model = [m for m in models.values() if 'default' in m][0]
-        elif self.args.model in models:
+        if self.args.model in models:
             self.model = models[self.args.model]
         else:
             err('unknown acoustic model: %s' % self.args.model)
