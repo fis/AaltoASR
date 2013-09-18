@@ -166,13 +166,14 @@ class AaltoASR(object):
                  audiofile]) != 0:
             err("input conversion of '%s' with sox failed" % self.args.input, exit=1)
 
-        self.audiofile = audiofile
+        self.audiofiles = [{ 'start': 0, 'file': audiofile }]
 
 
     def align(self):
         """Do segmentation with the Viterbi alignment tool."""
 
         self.convert_input()
+        audiofile = self.audiofiles[0]['file']
 
         self.log('computing Viterbi alignment')
 
@@ -206,7 +207,7 @@ class AaltoASR(object):
         # Make a recipe for the alignment
 
         with open(recipe, 'w') as f:
-            f.write('audio=%s transcript=%s alignment=%s' % (self.audiofile, alignfile, outfile))
+            f.write('audio=%s transcript=%s alignment=%s' % (audiofile, alignfile, outfile))
 
         # Run the Viterbi alignment
 
@@ -232,14 +233,17 @@ class AaltoASR(object):
         self.log('computing acoustic model likelihoods')
 
         recipe = join(self.workdir, 'input.recipe')
-        lnafile = join(self.workdir, 'input.lna')
+        lnafiles = []
 
         # Construct an input recipe
 
         with open(recipe, 'w') as f:
-            f.write('audio=%s lna=%s\n' % (self.audiofile, lnafile))
+            for i, audiofile in enumerate(self.audiofiles):
+                lnafile = join(self.workdir, 'input-{0}.lna'.format(i))
+                lnafiles.append(lnafile)
+                f.write('audio={0} lna={1}\n'.format(audiofile['file'], lnafile))
 
-        # Run phone_probs on the file
+        # Run phone_probs on the files
 
         cmd_out = sys.stderr if self.args.verbose else open('/dev/null', 'w')
 
@@ -249,7 +253,7 @@ class AaltoASR(object):
                  '-r', recipe], stdout=cmd_out) != 0:
             err('phone_probs failed', exit=1)
 
-        self.lna = lnafile
+        self.lna = lnafiles
 
 
     def rec(self):
@@ -257,11 +261,16 @@ class AaltoASR(object):
 
         self.log('recognizing speech')
 
-        # Call rec.py on the lna file
+        # Call rec.py on the lna files
+
+        lnamap = {}
 
         recipe = join(self.workdir, 'rec.recipe')
         with open(recipe, 'w') as f:
-            f.write('lna=%s\n' % basename(self.lna))
+            for i, lnafile in enumerate(self.lna):
+                lna_id = basename(lnafile)
+                lnamap[lna_id] = i
+                f.write('lna={0}\n'.format(lna_id))
 
         try:
             cmd = [bin('rec.py'),
@@ -278,19 +287,28 @@ class AaltoASR(object):
 
         # Parse the recognizer output to extract recognition result and state segmentation
 
+        rec_start = 0
         rec_trans = None
         rec_seg = []
 
+        re_lna = re.compile(r'^LNA: (.*)$')
         re_trans = re.compile(r'^REC: (.*)$')
         re_seg = re.compile(r'^(\d+) (\d+) (\d+)$')
 
         for line in rec_out.splitlines():
+            m = re_lna.match(line)
+            if m is not None:
+                rec_start = self.audiofiles[lnamap[m.group(1)]]['start']
+                continue
             m = re_trans.match(line)
             if m is not None:
                 rec_trans = m.group(1)
+                continue
             m = re_seg.match(line)
             if m is not None:
-                rec_seg.append(tuple(int(val) for val in m.group(1, 2, 3)))
+                start, end, state = m.group(1, 2, 3)
+                rec_seg.append((rec_start+int(start), rec_start+int(end), int(state)))
+                continue
 
         if rec_trans is None:
             sys.stderr.write(rec_out)
@@ -316,24 +334,31 @@ class AaltoASR(object):
 
         if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
             re_line = re.compile(r'^(\S+)\s+(\d+)')
+            self.morphseg = []
 
-            with open(join(self.workdir, 'wordhist'), 'r', encoding='iso-8859-1') as f:
+            for idx, audiofile in enumerate(self.audiofiles):
                 morphseg = []
-                prev_end = 0
+                file_start = audiofile['start']
+                prev_end = file_start
 
-                for line in f:
-                    m = re_line.match(line)
-                    if m is None: continue # skip malformed
-                    morph, end = m.group(1), int(m.group(2))
-                    morphseg.append((prev_end*fstep, end*fstep, morph))
-                    prev_end = end
+                with open(join(self.workdir, 'wordhist'), 'r', encoding='iso-8859-1') as f:
+                    for line in f:
+                        m = re_line.match(line)
+                        if m is None: continue # skip malformed
+                        morph, end = m.group(1), file_start + int(m.group(2))
+                        morphseg.append((prev_end*fstep, end*fstep, morph))
+                        prev_end = end
 
-            while len(morphseg) > 0 and (morphseg[0][2] == '<s>' or morphseg[0][2] == '<w>'):
-                morphseg.pop(0)
-            while len(morphseg) > 0 and (morphseg[-1][2] == '</s>' or morphseg[-1][2] == '<w>'):
-                morphseg.pop()
+                while len(morphseg) > 0 and (morphseg[0][2] == '<s>' or morphseg[0][2] == '<w>'):
+                    morphseg.pop(0)
+                while len(morphseg) > 0 and (morphseg[-1][2] == '</s>' or morphseg[-1][2] == '<w>'):
+                    morphseg.pop()
 
-            self.morphseg = morphseg
+                if len(morphseg) == 0:
+                    continue
+                if len(self.morphseg) > 0:
+                    self.morphseg.append((self.morphseg[-1][1], morphseg[0][0], '<w>'))
+                self.morphseg.extend(morphseg)
 
 
     def gen_output(self):
