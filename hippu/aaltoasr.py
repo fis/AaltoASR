@@ -31,6 +31,36 @@ def bin(prog):
 
 default_lmscale = 30
 
+# Command-line help
+
+help = {
+    'rec': {
+        'desc': 'Recognize speech from an audio file.',
+        'usage': '%(prog)s [options] input',
+        'modes': set(('trans', 'segword', 'segmorph', 'segphone')),
+        'defmode': 'trans',
+        'extra': ('The MODE parameter specifies which results to include in the generated output.  '
+                  'It has the form of a comma-separated list of the terms "trans", "segword", '
+                  '"segmorph" and "segphone", denoting a transcript of the recognized text, '
+                  'a word-level, statistical-morpheme-level or phoneme-level segmentation, '
+                  'respectively. The listed items will be included in the plaintext output. '
+                  'The default is "trans". For more details, see the User\'s Guide at: '
+                  'XXX.')
+        },
+    'align': {
+        'desc': 'Align a transcription to a speech audio file.',
+        'usage': '%(prog)s [options] -t transcript input',
+        'modes': set(('segword', 'segphone')),
+        'defmode': 'segword',
+        'extra': ('The MODE parameter specifies which results to include in the generated output. '
+                  'It has the form of a comma-separated list of the terms "segword" and "segphone", '
+                  'denoting a word-level or phoneme-level segmentation, respectively. The listed '
+                  'items will be included in the plaintext output. The default is "segword".  '
+                  'For more details, see the User\'s Guide at: '
+                  'XXX.')
+        }
+    }
+
 # Class for implementing the rec/align tools
 
 class AaltoASR(object):
@@ -41,32 +71,9 @@ class AaltoASR(object):
 
         # Ask argparse to grok the command line arguments
 
-        desc = {
-            'rec': 'Recognize speech from an audio file.',
-            'align': 'Align a transcription to a speech audio file.'
-            }
-        usage = {
-            'rec': '%(prog)s [options] input',
-            'align': '%(prog)s [options] -t transcript input'
-            }
-        validmode = {
-            'rec': set(('trans', 'segword', 'segmorph', 'segphone')),
-            'align': set(('segword', 'segphone'))
-            }
-        defmode = {
-            'rec': 'trans',
-            'align': 'segword'
-            }
+        thelp = help[tool]
 
-        epi = ('The MODE parameter specifies which results to include in the generated output. '
-               'It has the form of a comma-separated list of the terms "trans"(*), "segword", '
-               '"segmorph"(*) and "segphone", denoting a transcript of the recognized text, '
-               'a word-level, statistical-morpheme-level or phoneme-level segmentation, '
-               'respectively.  Terms marked with (*) are only available when using aaltoasr-rec.  '
-               'The listed items will be included in the plaintext output.  The default is "%s".  '
-               'For more details, see XXX.') % defmode[tool]
-
-        parser = argparse.ArgumentParser(description=desc[tool], usage=usage[tool], epilog=epi)
+        parser = argparse.ArgumentParser(description=thelp['desc'], usage=thelp['usage'], epilog=thelp['extra'])
 
         parser.add_argument('input', help='input audio file')
         parser.add_argument('-t', '--trans', help='provide an input transcript file', metavar='file',
@@ -75,7 +82,7 @@ class AaltoASR(object):
         parser.add_argument('-o', '--output', help='output results to file [default stdout]', metavar='file',
                             type=argparse.FileType('w'), default=sys.stdout)
         parser.add_argument('-m', '--mode', help='which kind of results to output (see below)', metavar='MODE',
-                            default=defmode[tool])
+                            default=thelp['defmode'])
         parser.add_argument('-T', '--tg', help='output also a Praat TextGrid segmentation to file', metavar='file',
                             type=argparse.FileType('w'), default=None)
         if tool == 'rec':
@@ -99,7 +106,7 @@ class AaltoASR(object):
 
         self.mode = set()
         for word in self.args.mode.split(','):
-            if word not in validmode[tool]:
+            if word not in thelp['modes']:
                 err('invalid output mode: %s' % word, exit=2)
             self.mode.add(word)
 
@@ -192,6 +199,7 @@ class AaltoASR(object):
 
         if call([bin('align'),
                  '-b', self.mpath, '-c', self.mpath+'.cfg',
+                 #'--swins', '2000',
                  '-i', '1',
                  '-r', recipe], stdout=cmd_out, stderr=cmd_out) != 0:
             err('align failed', exit=1)
