@@ -164,7 +164,7 @@ class AaltoASR(object):
         """Clean up the working directory and any temporary files."""
 
         if self.workdir.find('aaltoasr') >= 0: # sanity check
-            pass#shutil.rmtree(self.workdir)
+            shutil.rmtree(self.workdir)
 
 
     def convert_input(self):
@@ -493,6 +493,11 @@ class AaltoASR(object):
             else:
                 out.write('%s\n' % self.rec)
 
+        if 'trans' in self.mode and self.args.trans:
+            hdr('Recognition accuracy:')
+            phones = text2phn(self.args.trans, self.workdir, expand=not self.args.noexp)
+            sclite(out, self.rec, phones, self.workdir)
+
         if 'segword' in self.mode:
             hdr('Word-level segmentation:')
             for utt in intersperse(wordseg, ()):
@@ -676,6 +681,42 @@ def text2phn(input, workdir, expand=True):
     # Add phoneme lists
 
     return [{ 'words': para, 'phns': list('_'.join(para).replace('-', '_')) } for para in input]
+
+# SCLITE recognition transcript scoring
+
+def sclite(out, rec, phones, workdir):
+    reffile = join(workdir, 'sclite.ref')
+    hypfile = join(workdir, 'sclite.hyp')
+
+    hyptext = ' '.join(word for para in phones for word in para['words'])
+    hyptext = hyptext.replace('-', ' ')
+
+    with open(reffile, 'w', encoding='iso-8859-1') as f:
+        f.write(hyptext + ' (spk-0)\n')
+    with open(reffile+'.c', 'w', encoding='iso-8859-1') as f:
+        f.write(hyptext.replace(' ', '_') + ' (spk-0)\n')
+
+    rectext = rec.replace(' ', '')
+    rectext = re.sub(r'</?[sw]>', ' ', rectext)
+    rectext = re.sub(r'\s+', ' ', rectext).strip()
+
+    with open(hypfile, 'w', encoding='iso-8859-1') as f:
+        f.write(rectext + ' (spk-0)\n')
+    with open(hypfile+'.c', 'w', encoding='iso-8859-1') as f:
+        f.write(rectext.replace(' ', '_') + ' (spk-0)\n')
+
+    for mode, suffix, flags in (('Letter', '.c', ['-c']), ('Word', '', [])):
+        out.write('{0} error report:\n'.format(mode))
+
+        cmd = [bin('sclite')]
+        cmd.extend(flags)
+        cmd.extend(['-r', reffile+suffix, '-h', hypfile+suffix,
+                    '-s', '-i', 'rm', '-o', 'sum', 'stdout'])
+        scout = check_output(cmd).decode('ascii', errors='ignore')
+
+        for line in scout.split('\n'):
+            if line.find('SPKR') >= 0 or line.find('Sum/Avg') >= 0:
+                out.write(line + '\n')
 
 # Miscellaneous helpers
 
