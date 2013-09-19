@@ -70,10 +70,10 @@ help = {
         }
     }
 
-# Class for implementing the rec/align tools
+# Class for implementing the rec/align/adapt tools
 
 class AaltoASR(object):
-    def __init__(self, tool):
+    def __init__(self, tool, args=None):
         """Initialize and parse command line attributes."""
 
         self.tool = tool
@@ -88,6 +88,8 @@ class AaltoASR(object):
         parser.add_argument('-t', '--trans', help='provide an input transcript file', metavar='file',
                             required=True if tool == 'align' else False,
                             type=argparse.FileType('r'), default=None)
+        parser.add_argument('-a', '--adapt', help='provide a speaker adaptation file', metavar='file',
+                            default=None)
         parser.add_argument('-o', '--output', help='output results to file [default stdout]', metavar='file',
                             type=argparse.FileType('w'), default=sys.stdout)
         parser.add_argument('-m', '--mode', help='which kind of results to output (see below)', metavar='MODE',
@@ -120,7 +122,7 @@ class AaltoASR(object):
                                 type=int, default=default_args['align-sbeam'])
         params.add_argument('--noexp', help='disable input transcript expansion', action='store_true')
 
-        self.args = parser.parse_args()
+        self.args = parser.parse_args(args)
 
         # Check applicable arguments for validity
 
@@ -144,6 +146,11 @@ class AaltoASR(object):
                 sys.stderr.write('  %s [sample rate: %d Hz]\n' % (m, models[m]['srate']))
             sys.exit(2)
         self.mpath = join(rootdir, 'model', self.model['path'])
+        self.mcfg = self.mpath + ('.adapt.cfg' if self.adapt else '.cfg')
+        self.margs = ['-b', self.mpath, '-c', self.mcfg]
+
+        if self.args.adapt is not None:
+            self.margs.extend(('-S', self.args.adapt))
 
 
     def __enter__(self):
@@ -157,13 +164,13 @@ class AaltoASR(object):
         """Clean up the working directory and any temporary files."""
 
         if self.workdir.find('aaltoasr') >= 0: # sanity check
-            shutil.rmtree(self.workdir)
+            pass#shutil.rmtree(self.workdir)
 
 
     def convert_input(self):
         """Convert input audio to something suitable for the model."""
 
-        if self.args.split is not None:
+        if self.tool == 'rec' and self.args.split is not None:
             self.log('splitting input audio to {0}-second segments'.format(self.args.split))
             self.audiofiles = split_audio(self.args.split, self.args.input, self.workdir, self.model)
         else:
@@ -217,19 +224,19 @@ class AaltoASR(object):
         # Make a recipe for the alignment
 
         with open(recipe, 'w') as f:
-            f.write('audio=%s transcript=%s alignment=%s' % (audiofile, alignfile, outfile))
+            f.write('audio=%s transcript=%s alignment=%s speaker=UNK\n' % (audiofile, alignfile, outfile))
 
         # Run the Viterbi alignment
 
-        cmd_out = sys.stderr if self.args.verbose else subprocess.DEVNULL
+        cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
 
-        if call([bin('align'),
-                 '-b', self.mpath, '-c', self.mpath+'.cfg',
-                 '--swins', str(self.args.align_window),
-                 '--beam', str(self.args.align_beam),
-                 '--sbeam', str(self.args.align_sbeam),
-                 '-i', '1',
-                 '-r', recipe], stdout=cmd_out, stderr=cmd_out) != 0:
+        cmd = [bin('align'),
+               '-r', recipe, '-i', '1',
+               '--swins', str(self.args.align_window),
+               '--beam', str(self.args.align_beam),
+               '--sbeam', str(self.args.align_sbeam)]
+        cmd.extend(self.margs)
+        if call(cmd, stdout=cmd_out, stderr=cmd_out) != 0:
             err('align failed', exit=1)
 
         self.alignment = outfile
@@ -251,16 +258,17 @@ class AaltoASR(object):
             for i, audiofile in enumerate(self.audiofiles):
                 lnafile = join(self.workdir, 'input-{0}.lna'.format(i))
                 lnafiles.append(lnafile)
-                f.write('audio={0} lna={1}\n'.format(audiofile['file'], lnafile))
+                f.write('audio={0} lna={1} speaker=UNK\n'.format(audiofile['file'], lnafile))
 
         # Run phone_probs on the files
 
-        cmd_out = sys.stderr if self.args.verbose else subprocess.DEVNULL
+        cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
 
-        if call([bin('phone_probs'),
-                 '-b', self.mpath, '-C', self.mpath+'.gcl', '-c', self.mpath+'.cfg',
-                 '--eval-ming', '0.2', '-i', '1',
-                 '-r', recipe], stdout=cmd_out) != 0:
+        cmd = [bin('phone_probs'),
+               '-r', recipe, '-C', self.mpath+'.gcl', '-i', '1',
+               '--eval-ming', '0.2']
+        cmd.extend(self.margs)
+        if call(cmd, stdout=cmd_out, stderr=cmd_out) != 0:
             err('phone_probs failed', exit=1)
 
         self.lna = lnafiles
@@ -288,12 +296,13 @@ class AaltoASR(object):
                    '1' if 'segphone' in self.mode or self.tg else '0']
             if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
                 cmd.append(join(self.workdir, 'wordhist'))
-            cmd_out = sys.stderr if self.args.verbose else subprocess.DEVNULL
+            cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
             rec_out = check_output(cmd, stderr=cmd_out)
             rec_out = rec_out.decode('iso-8859-1')
         except subprocess.CalledProcessError as e:
-            sys.stderr.write(e.output)
-            err('rec.py failed %s %s' % (e.cmd, e.returncode), exit=1)
+            sys.stderr.write('rec.py output:\n')
+            sys.stderr.write(e.output.decode('iso-8859-1'))
+            err('rec.py failed: %s => %s' % (e.cmd, e.returncode), exit=1)
 
         # Parse the recognizer output to extract recognition result and state segmentation
 
@@ -592,6 +601,32 @@ item []:
                 tgfile.write('            xmin = %.3f\n' % (ph[0] / srate))
                 tgfile.write('            xmax = %.3f\n' % (ph[1] / srate))
                 tgfile.write('            text = "%s"\n' % ph[2])
+
+
+    def adapt(self, output):
+        """Generate a CMLLR adaptation transform from aligned output."""
+
+        if len(self.audiofiles) != 1: err('impossible: adaptation with multiple files', exit=1)
+        audiofile = self.audiofiles[0]['file']
+
+        self.log('training CMLLR adaptation matrix')
+
+        recipe = join(self.workdir, 'adapt.recipe')
+        with open(recipe, 'w') as f:
+            f.write('audio={0} alignment={1} speaker=UNK\n'.format(audiofile, self.alignment))
+
+        spk = join(self.workdir, 'adapt.spk')
+        with open(spk, 'w') as f:
+            f.write('\n'.join(['speaker UNK', '{', 'feature cmllr', '{', '}', '}', '']))
+
+        cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
+
+        if call([bin('mllr'),
+                 '-b', self.mpath, '-c', self.mpath+'.adapt.cfg',
+                 '-M', 'cmllr', '-O', '-i', '1',
+                 '-r', recipe, '-S', spk,
+                 '-o', output], stdout=cmd_out, stderr=cmd_out) != 0:
+            err('mllr failed', exit=1)
 
 
     def log(self, msg):
