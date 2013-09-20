@@ -61,7 +61,35 @@ various parameters.  The default values are set to favour accuracy
 over speed, so (depending on the input signal) recognition can easily
 take up to 20 times as much time as the length of the input audio.
 
-## Usage
+## Usage examples
+
+Recognize the speech in the audio file `speech.wav`:
+
+    aaltoasr-rec speech.wav
+
+Recognize the speech of a long audio file `speech.wav`; speed up the
+process by splitting the file into approximately 5-minute segments and
+running the recognition on four cores in parallel:
+
+    aaltoasr-rec -s 300 -n 4 speech.wav
+
+Recognize the speech in `speech.wav`, but also generate all supported
+levels of segmentation; write output in `speech.txt` and the
+segmentations additionally in TextGrid format to `speech.textgrid`:
+
+    aaltoasr-rec -m trans,segword,segmorph,segphone \
+      -o speech.txt -T speech.textgrid `speech.wav`
+
+Given the speech recording `speech.wav` and a corresponding plaintext
+transcription in `speech.txt`, produce a TextGrid alignment in
+`speech.textgrid` (along with a word-level alignment to standard
+output):
+
+    aaltoasr-align -T `speech.textgrid` -t `speech.txt` `speech.wav`
+
+See the section "Adaptation" for some further examples.
+
+## Option reference
 
 The `aaltoasr-rec` and `aaltoasr-align` tools, for the most part,
 share the same command line arguments.  Differences have been noted in
@@ -113,6 +141,15 @@ Split the input audio to segments of approximately *S* (by default,
 60) seconds.  The splitting is done using a heuristic that attempts to
 select a silent period of the input file, but this is not guaranteed
 to work.
+
+* **-n *N*, --cores *N*** (`aaltoasr-rec` with `-s` only)  
+Run the recognition process in parallel on up to *N* cores.  This
+parallelization only works when there are multiple independent files
+to process, and therefore only has an effect when used in conjunction
+with the `-s`/`--split` option.  To parallelize recognition or
+alignment of a set of files (with separate transcripts if doing
+alignment), simply run multiple instances of the script.  The `xargs
+-n 1 -P <N>` command may be helpful in automating this.
 
 * **-r, --raw** (`aaltoasr-rec` only)  
 Normally, the recognize transcript is postprocessed to a more
@@ -167,8 +204,8 @@ environment) differ much from what's expected.  To use the adaptation,
 train a profile with `aaltoasr-adapt`, and then use that with
 `aaltoasr-rec` or `aaltoasr-align` as follows:
 
-  aaltoasr-adapt -t training.txt training.wav speaker.conf
-  aaltoasr-rec -a speaker.conf test.wav
+    aaltoasr-adapt -t training.txt training.wav speaker.conf
+    aaltoasr-rec -a speaker.conf test.wav
 
 For simplicitly, only a single adaptation training audio file is
 supported.  If a transcript is provided with the `-t` parameter to
@@ -183,13 +220,13 @@ of this initial recognition step.
 For a single test file with unknown contents, it is also possible to
 do a two-pass recognition process:
 
-  aaltoasr-adapt test.wav speaker.conf
-  aaltoasr-rec -a speaker.conf test.wav
+    aaltoasr-adapt test.wav speaker.conf
+    aaltoasr-rec -a speaker.conf test.wav
 
 Similarly, it is possible to do a two-pass alignment as follows:
 
-  aaltoasr-adapt -t test.txt test.wav speaker.conf
-  aaltoasr-align -a speaker.conf -t test.txt test.wav
+    aaltoasr-adapt -t test.txt test.wav speaker.conf
+    aaltoasr-align -a speaker.conf -t test.txt test.wav
 
 The `aaltoasr-adapt` script knows of the following arguments:
 

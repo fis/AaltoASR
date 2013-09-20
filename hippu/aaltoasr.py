@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-import os
 import math
+import os
 import re
+import select
 import shutil
 import struct
 import sys
@@ -100,6 +101,8 @@ class AaltoASR(object):
             parser.add_argument('-s', '--split',
                                 help='split input file to segments of about S seconds [default %(const)s if present]',
                                 metavar='S', nargs='?', type=float, default=None, const=60.0)
+            parser.add_argument('-n', '--cores', help='run recognition simultaneously on up to N cores [default 1]',
+                                metavar='N', type=int, default=1)
             parser.add_argument('-r', '--raw', help='produce raw recognizer output (with morph breaks)',
                                 action='store_true')
         parser.add_argument('-v', '--verbose', help='print output also from invoked commands', action='store_true')
@@ -107,8 +110,8 @@ class AaltoASR(object):
         parser.add_argument('--tempdir', help='directory for temporary files', metavar='D')
 
         params = parser.add_argument_group('speech recognition parameters')
-        params.add_argument('-M', '--model', help='acoustic model to use; "-M ?" for list [default "%(default)s"]',
-                            metavar='M', default=default_args['model'])
+        params.add_argument('-M', '--model', help='acoustic model to use; "-M list" for list [default "%(default)s"]',
+                            metavar='M', default=default_args['model'], choices=models.keys())
         if tool == 'rec':
             params.add_argument('-L', '--lmscale', help='language model scale factor [default %(default)s]', metavar='L',
                                 type=int, default=default_args['lmscale'])
@@ -185,6 +188,10 @@ class AaltoASR(object):
 
             self.audiofiles = [{ 'start': 0, 'file': audiofile }]
 
+        if self.args.cores > len(self.audiofiles):
+            self.args.cores = len(self.audiofiles)
+            self.log('using only {0} core{1}; no more audio segments'.format(
+                    self.args.cores, '' if self.args.cores == 1 else 's'))
 
     def align(self):
         """Do segmentation with the Viterbi alignment tool."""
@@ -262,14 +269,11 @@ class AaltoASR(object):
 
         # Run phone_probs on the files
 
-        cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
-
         cmd = [bin('phone_probs'),
                '-r', recipe, '-C', self.mpath+'.gcl', '-i', '1',
                '--eval-ming', '0.2']
         cmd.extend(self.margs)
-        if call(cmd, stdout=cmd_out, stderr=cmd_out) != 0:
-            err('phone_probs failed', exit=1)
+        self.run(cmd, batchargs=lambda i, n: ('-B', str(n), '-I', str(i)))
 
         self.lna = lnafiles
 
@@ -290,25 +294,19 @@ class AaltoASR(object):
                 lnamap[lna_id] = i
                 f.write('lna={0}\n'.format(lna_id))
 
-        try:
-            cmd = [bin('rec.py'),
-                   rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale),
-                   '1' if 'segphone' in self.mode or self.tg else '0']
-            if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
-                cmd.append(join(self.workdir, 'wordhist'))
-            cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
-            rec_out = check_output(cmd, stderr=cmd_out)
-            rec_out = rec_out.decode('iso-8859-1')
-        except subprocess.CalledProcessError as e:
-            sys.stderr.write('rec.py output:\n')
-            sys.stderr.write(e.output.decode('iso-8859-1'))
-            err('rec.py failed: %s => %s' % (e.cmd, e.returncode), exit=1)
+        cmd = [bin('rec.py'),
+               rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale),
+               '1' if 'segphone' in self.mode or self.tg else '0',
+               join(self.workdir, 'wordhist') if 'segmorph' in self.mode or 'segword' in self.mode or self.tg else '']
+        rec_out = self.run(cmd, output=True, batchargs=lambda i, n: (str(n), str(i)))
+        rec_out = ''.join(o.decode('iso-8859-1') for o in rec_out)
 
         # Parse the recognizer output to extract recognition result and state segmentation
 
+        rec_lna = -1
         rec_start = 0
-        rec_trans = []
-        rec_seg = []
+        rec_trans = [[] for i in self.lna]
+        rec_seg = [[[] for i in self.lna]]
 
         re_lna = re.compile(r'^LNA: (.*)$')
         re_trans = re.compile(r'^REC: (.*)$')
@@ -317,17 +315,21 @@ class AaltoASR(object):
         for line in rec_out.splitlines():
             m = re_lna.match(line)
             if m is not None:
-                rec_start = self.audiofiles[lnamap[m.group(1)]]['start']
+                rec_lna = lnamap[m.group(1)]
+                rec_start = self.audiofiles[rec_lna]['start']
                 continue
             m = re_trans.match(line)
             if m is not None:
-                rec_trans.append(m.group(1))
+                rec_trans[rec_lna].append(m.group(1))
                 continue
             m = re_seg.match(line)
             if m is not None:
                 start, end, state = m.group(1, 2, 3)
-                rec_seg.append((rec_start+int(start), rec_start+int(end), int(state)))
+                rec_seg[rec_lna].append((rec_start+int(start), rec_start+int(end), int(state)))
                 continue
+
+        rec_trans = [i for l in rec_trans for i in l]
+        rec_seg = [i for l in rec_seg for i in l]
 
         if not rec_trans:
             sys.stderr.write(rec_out)
@@ -634,6 +636,54 @@ item []:
             err('mllr failed', exit=1)
 
 
+    def run(self, cmdline, batchargs=None, output=False):
+        if self.args.verbose:
+            cmd_out = sys.stderr
+            self.log('run: {0}'.format(' '.join(cmd)))
+        else:
+            cmd_out = open(os.devnull, 'w')
+
+        if batchargs is None or self.args.cores == 1:
+            cmds = (cmdline,)
+        else:
+            cmds = [tuple(cmdline) + tuple(batchargs(i, self.args.cores))
+                    for i in range(1, self.args.cores+1)]
+
+        procs = []
+
+        for cmd in cmds:
+            try:
+                p = subprocess.Popen(cmd,
+                                     stdout=subprocess.PIPE if output else cmd_out,
+                                     stderr=cmd_out)
+            except Exception as e:
+                err('command "{0}" failed: {1}'.format(' '.join(cmd), e), exit=1)
+
+            procs.append(p)
+
+        if output:
+            fds = [p.stdout.fileno() for p in procs]
+            fdmap = dict((fd, i) for i, fd in enumerate(fds))
+            outputs = [bytearray() for i in range(len(cmds))]
+            while fds:
+                readable = select.select(fds, (), ())[0]
+                for fd in readable:
+                    out = os.read(fd, 4096)
+                    if len(out) == 0:
+                        fds.remove(fd)
+                    else:
+                        outputs[fdmap[fd]].extend(out)
+
+        for i, p in enumerate(procs):
+            p.wait()
+            if p.returncode != 0:
+                err('command "{0}" failed: non-zero return code: {1}'.format(
+                        ' '.join(cmds[i]), p.returncode), exit=1)
+
+        if output:
+            return [bytes(out) for out in outputs]
+
+
     def log(self, msg):
         if not self.args.quiet:
             sys.stderr.write('%s: %s\n' % (basename(sys.argv[0]), msg))
@@ -788,6 +838,7 @@ def split_audio(seglen, infile, workdir, model):
     srate = model['srate']
     framesize = model['fstep']
     segframes = int(seglen * srate / framesize)
+    max_offset = segframes / 5
 
     # generate frame energy mapping for the input audio
 
@@ -828,9 +879,11 @@ def split_audio(seglen, infile, workdir, model):
         if left <= 1.5 * segframes:
             take = left
         else:
-            minpos = max(0, int(at + 0.8*segframes))
-            maxpos = min(len(energy), int(at + 1.2*segframes))
-            pos = minpos + min(enumerate(energy[minpos:maxpos]), key=lambda v: v[1])[0]
+            target = at + segframes
+            minpos = max(0, int(target - max_offset))
+            maxpos = min(len(energy), int(target + max_offset + 1))
+            pos = minpos + min(enumerate(energy[minpos:maxpos]),
+                               key=lambda v: (1+abs(minpos+v[0]-target)/max_offset)*v[1])[0]
             take = pos - at
 
         segments.append((at, at+take))

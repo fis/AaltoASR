@@ -6,7 +6,7 @@ import sys
 import os
 import re
 
-if len(sys.argv) < 7 or len(sys.argv) > 8:
+if len(sys.argv) != 8 and len(sys.argv) != 10:
     sys.stderr.write('rec.py customized for aaltoasr-rec internal use only\n')
     sys.exit(1)
 
@@ -47,11 +47,13 @@ recipefile = sys.argv[3]
 lna_path = sys.argv[4]
 lm_scale = int(sys.argv[5])
 global_beam = 250
-num_batches = 1 #int(sys.argv[4])
-batch_index = 1 #int(sys.argv[5])
 
 do_phoneseg = int(sys.argv[6])
-morphseg_file = sys.argv[7] if len(sys.argv) == 8 else None
+morphseg_file = sys.argv[7]
+
+num_batches = int(sys.argv[8]) if len(sys.argv) == 10 else 1
+batch_index = int(sys.argv[9]) if len(sys.argv) == 10 else 1
+
 
 ##################################################
 
@@ -65,30 +67,11 @@ f.close()
 
 # Extract the lna files
 
-if num_batches <= 1:
-    target_lines = len(recipelines)
-else:
-    target_lines = int(len(recipelines)/num_batches)
-if target_lines < 1:
-    target_lines = 1
-
-cur_index = 1
-cur_line = 0
-
 lnafiles=[]
 for line in recipelines:
-    if num_batches > 1 and cur_index < num_batches:
-        if cur_line >= target_lines:
-            cur_index += 1
-            if (cur_index > batch_index):
-                break
-            cur_line -= target_lines
-
-    if num_batches <= 1 or cur_index == batch_index:
-        result = re.search(r"lna=(\S+)", line)
-        if result:
-            lnafiles = lnafiles + [result.expand(r"\1")]
-    cur_line += 1
+    result = re.search(r"lna=(\S+)", line)
+    if result:
+        lnafiles = lnafiles + [result.expand(r"\1")]
 
 # Check LNA path
 if lna_path[-1] != '/':
@@ -150,15 +133,18 @@ print "WORD_END_BEAM: ", word_end_beam
 print "LMSCALE: ", lm_scale
 print "DURSCALE: ", dur_scale
 
-if morphseg_file is not None:
+if morphseg_file:
     t.set_generate_word_graph(1)
 
 for idx, lnafile in enumerate(lnafiles):
+    if idx % num_batches != batch_index - 1:
+        continue # recognized by a different instance
+
     t.lna_open(lna_path + lnafile, 1024)
 
     print "LNA:", lnafile
     print "REC: ",
     rec(0,-1)
 
-    if morphseg_file is not None:
+    if morphseg_file:
         t.write_word_history('%s-%d' % (morphseg_file, idx))
