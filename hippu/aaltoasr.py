@@ -311,7 +311,7 @@ class AaltoASR(object):
         rec_lna = -1
         rec_start = 0
         rec_trans = [[] for i in self.lna]
-        rec_seg = [[[] for i in self.lna]]
+        rec_seg = [[] for i in self.lna]
 
         re_lna = re.compile(r'^LNA: (.*)$')
         re_trans = re.compile(r'^REC: (.*)$')
