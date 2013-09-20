@@ -81,9 +81,9 @@ The following options are available:
 * **-t *file*, --trans *file*** (required for `aaltoasr-align`)  
 Specifies that *file* contains a transcript of the contents of the
 input audio file.  For `aaltoasr-rec`, it is used to compute the
-recognition error rates (**TODO**: missing feature).  For
-`aaltoasr-align`, the sequence of phonemes expected in the input file
-is taken directly from the transcript.
+recognition error rates.  For `aaltoasr-align`, the sequence of
+phonemes expected in the input file is taken directly from the
+transcript.
 
 * **-a *file*, --adapt *file***  
 Provide a speaker adaptation file (generated with `aaltoasr-adapt`).
@@ -161,8 +161,67 @@ to a more phonetic form.
 
 ## Adaptation
 
-TODO.
+The `aaltoasr` scripts support a limited form of acoustic model
+adaptation, which can be helpful if the speaker (or recording
+environment) differ much from what's expected.  To use the adaptation,
+train a profile with `aaltoasr-adapt`, and then use that with
+`aaltoasr-rec` or `aaltoasr-align` as follows:
+
+  aaltoasr-adapt -t training.txt training.wav speaker.conf
+  aaltoasr-rec -a speaker.conf test.wav
+
+For simplicitly, only a single adaptation training audio file is
+supported.  If a transcript is provided with the `-t` parameter to
+`aaltoasr-adapt`, supervised adaptation will be done; if the `-t`
+parameter is not used, the adaptation is unsupervised.  Internally,
+for supervised adaptation the transcript and audio will be aligned
+with `aaltoasr-align`, while for unsupervised adaptation the audio
+will be processed with `aaltoasr-rec` first.  Whether unsupervised
+adaptation improves the results or not depends somewhat on the quality
+of this initial recognition step.
+
+For a single test file with unknown contents, it is also possible to
+do a two-pass recognition process:
+
+  aaltoasr-adapt test.wav speaker.conf
+  aaltoasr-rec -a speaker.conf test.wav
+
+Similarly, it is possible to do a two-pass alignment as follows:
+
+  aaltoasr-adapt -t test.txt test.wav speaker.conf
+  aaltoasr-align -a speaker.conf -t test.txt test.wav
+
+The `aaltoasr-adapt` script knows of the following arguments:
+
+* **-t *file*, --trans *file***  
+Provide a transcript of the audio file for supervised adaptation.
+
+* **-v, --verbose**  
+Print output also from the recognition/alignment/adaptation tools.
+
+* **-a *A*, --args *A***  
+Pass the string *A* as extra arguments to the underlying invocation of
+`aaltoasr-align` (supervised) or `aaltoasr-rec` (unsupervised).  This
+can be used to tune the alignment/recognition parameters for the
+adaptation process.
 
 ## Technical details
 
-TODO: internals documentation.
+The individual executables of the AaltoASR tools support a number of
+features not covered by this guide.  The tools can be found in the
+`bin` directory sibling to the `scripts` directory; type `which
+aaltoasr-rec` to locate them.  The [Github page][aaltoasr] will
+hopefully at some point contain detailed documentation of them.
+
+The form of adaptation supported by the scripts is restricted to a
+single feature domain CMLLR transformation.  The underlying toolset
+also supports model-space MLLR (optionally with a regression tree for
+multiple transformations per speaker), but training that is beyond the
+scope of this manual.  However, any speaker configuration can (in
+theory) be used with the scripts.  The speaker identifier used by the
+scripts is `UNK`.
+
+To use custom acoustic models, make a local copy of the (very short)
+`aaltoasr-rec` (or `aaltoasr-align`) script, and have it modify the
+`aaltoasr.models` list before initializing the `AaltoASR` object.
+Absolute paths can be used.
