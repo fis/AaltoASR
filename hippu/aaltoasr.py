@@ -71,6 +71,15 @@ help = {
         }
     }
 
+class ModelAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if values == 'list':
+            sys.stderr.write('supported models:\n')
+            for m in sorted(models.keys()):
+                sys.stderr.write('  %s [sample rate: %d Hz]\n' % (m, models[m]['srate']))
+            sys.exit(2)
+        setattr(namespace, self.dest, values)
+
 # Class for implementing the rec/align/adapt tools
 
 class AaltoASR(object):
@@ -111,7 +120,8 @@ class AaltoASR(object):
 
         params = parser.add_argument_group('speech recognition parameters')
         params.add_argument('-M', '--model', help='acoustic model to use; "-M list" for list [default "%(default)s"]',
-                            metavar='M', default=default_args['model'], choices=models.keys())
+                            metavar='M', default=default_args['model'], choices=['list']+list(models.keys()),
+                            action=ModelAction)
         if tool == 'rec':
             params.add_argument('-L', '--lmscale', help='language model scale factor [default %(default)s]', metavar='L',
                                 type=int, default=default_args['lmscale'])
@@ -140,16 +150,9 @@ class AaltoASR(object):
 
         self.tg = self.args.tg is not None
 
-        if self.args.model in models:
-            self.model = models[self.args.model]
-        else:
-            err('unknown acoustic model: %s' % self.args.model)
-            sys.stderr.write('supported models:\n')
-            for m in sorted(models.keys()):
-                sys.stderr.write('  %s [sample rate: %d Hz]\n' % (m, models[m]['srate']))
-            sys.exit(2)
+        self.model = models[self.args.model]
         self.mpath = join(rootdir, 'model', self.model['path'])
-        self.mcfg = self.mpath + ('.adapt.cfg' if self.adapt else '.cfg')
+        self.mcfg = self.mpath + ('.adapt.cfg' if self.args.adapt else '.cfg')
         self.margs = ['-b', self.mpath, '-c', self.mcfg]
 
         if self.args.adapt is not None:
