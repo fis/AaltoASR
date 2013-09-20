@@ -158,6 +158,8 @@ class AaltoASR(object):
         if self.args.adapt is not None:
             self.margs.extend(('-S', self.args.adapt))
 
+        self.cores = self.args.cores if tool == 'rec' else 1
+
 
     def __enter__(self):
         """Make a working directory for a single execution."""
@@ -191,10 +193,10 @@ class AaltoASR(object):
 
             self.audiofiles = [{ 'start': 0, 'file': audiofile }]
 
-        if self.args.cores > len(self.audiofiles):
-            self.args.cores = len(self.audiofiles)
+        if self.cores > len(self.audiofiles):
+            self.cores = len(self.audiofiles)
             self.log('using only {0} core{1}; no more audio segments'.format(
-                    self.args.cores, '' if self.args.cores == 1 else 's'))
+                    self.cores, '' if self.cores == 1 else 's'))
 
     def align(self):
         """Do segmentation with the Viterbi alignment tool."""
@@ -646,11 +648,11 @@ item []:
         else:
             cmd_out = open(os.devnull, 'w')
 
-        if batchargs is None or self.args.cores == 1:
+        if batchargs is None or self.cores == 1:
             cmds = (cmdline,)
         else:
-            cmds = [tuple(cmdline) + tuple(batchargs(i, self.args.cores))
-                    for i in range(1, self.args.cores+1)]
+            cmds = [tuple(cmdline) + tuple(batchargs(i, self.cores))
+                    for i in range(1, self.cores+1)]
 
         procs = []
 
