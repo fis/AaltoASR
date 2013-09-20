@@ -642,7 +642,7 @@ item []:
     def run(self, cmdline, batchargs=None, output=False):
         if self.args.verbose:
             cmd_out = sys.stderr
-            self.log('run: {0}'.format(' '.join(cmd)))
+            self.log('run: {0}'.format(' '.join(cmdline)))
         else:
             cmd_out = open(os.devnull, 'w')
 
