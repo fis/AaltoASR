@@ -8,7 +8,8 @@ import aaltoasr
 parser = argparse.ArgumentParser(
     description='Learn an acoustic model adaptation.',
     usage='%(prog)s [options] [-t transcript] input output',
-    epilog='For more details, see the User\'s Guide at: XXX')
+    epilog=('For more details, see the User\'s Guide at: '
+            'http://users.ics.aalto.fi/htkallas/guide.html'))
 
 parser.add_argument('input', help='input audio file')
 parser.add_argument('output', help='output adaptation file')

@@ -1,5 +1,7 @@
 # aaltoasr-rec / aaltoasr-align User's Guide
 
+<!---
+
 **Testing the beta version:**
 
 To set things up, type one of the following, depending on the
@@ -17,6 +19,8 @@ environment.  (If your shell is not bash, try typing `bash` first.)
 
     source /share/puhe/htkallas/aaltoasr/init.sh
 
+-->
+
 ## Introduction
 
 `aaltoasr-rec` and `aaltoasr-align` are two command-line scripts for
@@ -24,7 +28,6 @@ using the [AaltoASR][aaltoasr] tools for simple speech recognition and
 segmentation (forced-alignment) tasks.  `aaltoasr-adapt` provides
 additional rudimentary speaker adaptation support.
 
-**(TODO: not installed to the Hippu module system yet.)**
 To use the tools, load them in your path with `module load aaltoasr`.
 
 [aaltoasr]: https://github.com/aalto-speech/AaltoASR "AaltoASR github page"

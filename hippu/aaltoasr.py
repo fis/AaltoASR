@@ -55,7 +55,7 @@ help = {
                   'a word-level, statistical-morpheme-level or phoneme-level segmentation, '
                   'respectively. The listed items will be included in the plaintext output. '
                   'The default is "trans". For more details, see the User\'s Guide at: '
-                  'XXX.')
+                  'http://users.ics.aalto.fi/htkallas/guide.html')
         },
     'align': {
         'desc': 'Align a transcription to a speech audio file.',
@@ -67,7 +67,7 @@ help = {
                   'denoting a word-level or phoneme-level segmentation, respectively. The listed '
                   'items will be included in the plaintext output. The default is "segword".  '
                   'For more details, see the User\'s Guide at: '
-                  'XXX.')
+                  'http://users.ics.aalto.fi/htkallas/guide.html')
         }
     }
 
