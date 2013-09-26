@@ -135,6 +135,8 @@ class AaltoASR(object):
                                 type=int, default=default_args['align-sbeam'])
         params.add_argument('--noexp', help='disable input transcript expansion', action='store_true')
 
+        parser.add_argument('--keep', help=argparse.SUPPRESS, action='store_true')
+
         self.args = parser.parse_args(args)
 
         # Check applicable arguments for validity
@@ -171,7 +173,7 @@ class AaltoASR(object):
     def __exit__(self, type, value, traceback):
         """Clean up the working directory and any temporary files."""
 
-        if self.workdir.find('aaltoasr') >= 0: # sanity check
+        if self.workdir.find('aaltoasr') >= 0 and not self.args.keep: # sanity check
             shutil.rmtree(self.workdir)
 
 
@@ -223,14 +225,14 @@ class AaltoASR(object):
                 f.write('__\n')
                 for phnum, ph in enumerate(phns):
                     if ph == '_':
-                        f.write('_\n')
+                        f.write('_ #{0}:{1}\n'.format(pnum, phnum))
                     else:
                         prevph, nextph = '_', '_'
                         for prev in range(phnum-1, -1, -1):
                             if phns[prev] != '_': prevph = phns[prev]; break
                         for next in range(phnum+1, len(phns)):
                             if phns[next] != '_': nextph = phns[next]; break
-                        f.write('%s-%s+%s\n' % (prevph, ph, nextph))
+                        f.write('{0}-{1}+{2} #{3}:{4}\n'.format(prevph, ph, nextph, pnum, phnum))
             f.write('__\n')
 
         # Make a recipe for the alignment
@@ -399,13 +401,14 @@ class AaltoASR(object):
 
             rawseg = []
 
-            re_line = re.compile(r'^(\d+) (\d+) ([^\.]+)\.(\d+)')
+            re_line = re.compile(r'^(\d+) (\d+) ([^\.]+)\.(\d+)(?: #(\d+):(\d+))?')
             with open(self.alignment, 'r', encoding='iso-8859-1') as f:
                 for line in f:
                     m = re_line.match(line)
                     if m is None:
                         err('invalid alignment line: %s' % line, exit=1)
-                    rawseg.append((int(m.group(1)), int(m.group(2)), m.group(3), int(m.group(4))))
+                    phpos = (int(m.group(5)), int(m.group(6))) if m.group(5) else None
+                    rawseg.append((int(m.group(1)), int(m.group(2)), m.group(3), int(m.group(4)), phpos))
 
             # Recover the phoneme level segments from the state level alignment file
 
@@ -413,7 +416,7 @@ class AaltoASR(object):
 
             cur_ph, cur_state = None, 0
 
-            for start, end, rawph, state in rawseg:
+            for start, end, rawph, state, phpos in rawseg:
                 ph = trip2ph(rawph)
 
                 if ph == cur_ph and state == cur_state + 1:
@@ -425,7 +428,7 @@ class AaltoASR(object):
                         continue # don't update end
                     phseg[-1][1] = end
                 else:
-                    phseg.append([start, end, ph])
+                    phseg.append([start, end, ph, phpos])
 
                 cur_ph, cur_state = ph, state
 
@@ -440,24 +443,40 @@ class AaltoASR(object):
         # Merge phoneme segmentation to words in transcript if aligning
 
         if ('segword' in self.mode or self.tg) and self.tool == 'align':
-            if len(self.phones) != len(uttseg):
-                err('segmenter confused: utterance counts differ (%d != %d)' %
-                    (len(self.phones['words']), len(uttseg)), exit=1)
+            warned = False
 
+            phonepos = dict((pos, (start, end, ph))
+                            for start, end, ph, pos
+                            in (i for utt in uttseg for i in utt))
             wordseg = []
 
-            for uttidx, seg in enumerate(uttseg):
+            at = 0
+            for uttidx, utt in enumerate(self.phones):
+                phstack = []
+
+                for phidx, ph in enumerate(utt['phns']):
+                    if (uttidx, phidx) in phonepos:
+                        start, end, aph = phonepos[(uttidx, phidx)]
+                        if aph != ph:
+                            err('segmenter confused: phoneme mismatch at {0}/{1}: {2} != {3}'.format(uttidx, phidx, aph, ph), exit=1)
+                        at = end
+                    else:
+                        if not warned:
+                            self.log('warning: gaps in aligned output (check transcript?)')
+                            warned = True
+                        start, end = at, at
+                    phstack.append((start, end, ph))
+
                 wseg = []
-                phstack = list(seg)
+
                 for w in intersperse(self.phones[uttidx]['words'], '_'):
                     start, end = 0, 0
                     for phnum, ph in enumerate(w.replace('-', '_')):
-                        if ph != phstack[0][2]:
-                            err('segmenter confused: trans/align mismatch in utt %d word "%s"' % (uttidx+1, w), exit=1)
                         if phnum == 0: start = phstack[0][0]
                         end = phstack[0][1]
                         phstack.pop(0)
                     if w != '_': wseg.append((start, end, w))
+
                 wordseg.append(wseg)
 
         # Merge morpheme segmentation into words if required
