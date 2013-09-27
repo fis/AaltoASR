@@ -46,7 +46,7 @@ default_args = {
 help = {
     'rec': {
         'desc': 'Recognize speech from an audio file.',
-        'usage': '%(prog)s [options] input',
+        'usage': '%(prog)s [options] input [input ...]',
         'modes': ('trans', 'segword', 'segmorph', 'segphone'),
         'defmode': 'trans',
         'extra': ('The MODE parameter specifies which results to include in the generated output.  '
@@ -59,7 +59,7 @@ help = {
         },
     'align': {
         'desc': 'Align a transcription to a speech audio file.',
-        'usage': '%(prog)s [options] -t transcript input',
+        'usage': '%(prog)s [options] -t transcript [-t transcript ...] input [input ...]',
         'modes': ('segword', 'segphone'),
         'defmode': 'segword',
         'extra': ('The MODE parameter specifies which results to include in the generated output. '
@@ -94,10 +94,9 @@ class AaltoASR(object):
 
         parser = argparse.ArgumentParser(description=thelp['desc'], usage=thelp['usage'], epilog=thelp['extra'])
 
-        parser.add_argument('input', help='input audio file')
+        parser.add_argument('input', help='input audio file', nargs='+')
         parser.add_argument('-t', '--trans', help='provide an input transcript file', metavar='file',
-                            required=True if tool == 'align' else False,
-                            type=argparse.FileType('r'), default=None)
+                            required=True if tool == 'align' else False, action='append')
         parser.add_argument('-a', '--adapt', help='provide a speaker adaptation file', metavar='file',
                             default=None)
         parser.add_argument('-o', '--output', help='output results to file [default stdout]', metavar='file',
@@ -107,13 +106,13 @@ class AaltoASR(object):
         parser.add_argument('-T', '--tg', help='output also a Praat TextGrid segmentation to file', metavar='file',
                             type=argparse.FileType('w'), default=None)
         if tool == 'rec':
+            parser.add_argument('-r', '--raw', help='produce raw recognizer output (with morph breaks)',
+                                action='store_true')
             parser.add_argument('-s', '--split',
                                 help='split input file to segments of about S seconds [default %(const)s if present]',
                                 metavar='S', nargs='?', type=float, default=None, const=60.0)
-            parser.add_argument('-n', '--cores', help='run recognition simultaneously on up to N cores [default 1]',
-                                metavar='N', type=int, default=1)
-            parser.add_argument('-r', '--raw', help='produce raw recognizer output (with morph breaks)',
-                                action='store_true')
+        parser.add_argument('-n', '--cores', help='run tasks simultaneously on up to N cores [default 1]',
+                            metavar='N', type=int, default=1)
         parser.add_argument('-v', '--verbose', help='print output also from invoked commands', action='store_true')
         parser.add_argument('-q', '--quiet', help='do not print status messages', action='store_true')
         parser.add_argument('--tempdir', help='directory for temporary files', metavar='D')
@@ -141,8 +140,15 @@ class AaltoASR(object):
 
         # Check applicable arguments for validity
 
-        if not os.access(self.args.input, os.R_OK):
-            err('input file not readable: %s' % self.args.input, exit=2)
+        for infile in self.args.input:
+            if not os.access(infile, os.R_OK):
+                err('input file not readable: {0}'.format(infile), exit=2)
+
+        self.transfiles = None
+        if self.args.trans:
+            self.transfiles = [open(f) for f in self.args.trans]
+            if len(self.transfiles) != len(self.args.input):
+                err('number of transcript files does not match number of inputs', exit=2)
 
         self.mode = set()
         for word in self.args.mode.split(','):
@@ -160,7 +166,7 @@ class AaltoASR(object):
         if self.args.adapt is not None:
             self.margs.extend(('-S', self.args.adapt))
 
-        self.cores = self.args.cores if tool == 'rec' else 1
+        self.cores = self.args.cores
 
 
     def __enter__(self):
@@ -180,69 +186,88 @@ class AaltoASR(object):
     def convert_input(self):
         """Convert input audio to something suitable for the model."""
 
-        if self.tool == 'rec' and self.args.split is not None:
-            self.log('splitting input audio to {0}-second segments'.format(self.args.split))
-            self.audiofiles = split_audio(self.args.split, self.args.input, self.workdir, self.model)
-        else:
-            self.log('converting input audio file to %d Hz mono' % self.model['srate'])
+        self.audiofiles = []
 
-            audiofile = join(self.workdir, 'input.wav')
+        for idx, infile in enumerate(self.args.input):
+            fileid = 'input-{0}'.format(idx)
+            base = join(self.workdir, fileid)
 
-            if call([bin('sox'), self.args.input,
-                     '-t', 'wav', '-r', str(self.model['srate']), '-b', '16', '-e', 'signed-integer', '-c', '1',
-                     audiofile]) != 0:
-                err("input conversion of '%s' with sox failed" % self.args.input, exit=1)
+            finfo = { 'id': fileid,
+                      'path': infile }
 
-            self.audiofiles = [{ 'start': 0, 'file': audiofile }]
+            if self.tool == 'rec' and self.args.split is not None:
+                self.log('splitting input file {0} to {1}-second segments'.format(infile, self.args.split))
+                finfo['files'] = split_audio(self.args.split, infile, base, self.model)
+            else:
+                self.log('converting input file {0} to {1} Hz mono'.format(infile, self.model['srate']))
 
-        if self.cores > len(self.audiofiles):
-            self.cores = len(self.audiofiles)
+                audiofile = base + '.wav'
+
+                if call([bin('sox'), infile,
+                         '-t', 'wav', '-r', str(self.model['srate']), '-b', '16', '-e', 'signed-integer', '-c', '1',
+                         audiofile]) != 0:
+                    err("input conversion of '%s' with sox failed" % self.args.input, exit=1)
+
+                finfo['files'] = [{ 'start': 0, 'file': audiofile }]
+
+            self.audiofiles.append(finfo)
+
+        nfiles = sum(len(finfo['files']) for finfo in self.audiofiles)
+
+        if self.cores > nfiles:
+            self.cores = nfiles
             self.log('using only {0} core{1}; no more audio segments'.format(
                     self.cores, '' if self.cores == 1 else 's'))
+
 
     def align(self):
         """Do segmentation with the Viterbi alignment tool."""
 
         self.convert_input()
-        audiofile = self.audiofiles[0]['file']
+        #audiofile = self.audiofiles[0]['file']
 
         self.log('computing Viterbi alignment')
 
         recipe = join(self.workdir, 'align.recipe')
-        alignfile = join(self.workdir, 'align.phn')
-        outfile = join(self.workdir, 'align.out')
+        alignfiles = [join(self.workdir, '{0}.phn'.format(f['id'])) for f in self.audiofiles]
+        outfiles = [join(self.workdir, '{0}.align'.format(f['id'])) for f in self.audiofiles]
 
-        # Convert the transcription to a phoneme list
+        self.phones = [None] * len(self.audiofiles)
 
-        phones = text2phn(self.args.trans, self.workdir, expand=not self.args.noexp)
-        self.phones = phones
+        for fidx, finfo in enumerate(self.audiofiles):
+            audiofile = finfo['files'][0]['file'] # never split when aligning
 
-        # Write out the cross-word triphone transcript
+            # Convert the transcription to a phoneme list
 
-        with open(alignfile, 'w', encoding='iso-8859-1') as f:
-            for pnum, para in enumerate(phones):
-                phns = para['phns']
+            phones = text2phn(self.transfiles[fidx], self.workdir, expand=not self.args.noexp)
+            self.phones[fidx] = phones
+
+            # Write out the cross-word triphone transcript
+
+            with open(alignfiles[fidx], 'w', encoding='iso-8859-1') as f:
+                for pnum, para in enumerate(phones):
+                    phns = para['phns']
+                    f.write('__\n')
+                    for phnum, ph in enumerate(phns):
+                        if ph == '_':
+                            f.write('_ #{0}:{1}\n'.format(pnum, phnum))
+                        else:
+                            prevph, nextph = '_', '_'
+                            for prev in range(phnum-1, -1, -1):
+                                if phns[prev] != '_': prevph = phns[prev]; break
+                            for next in range(phnum+1, len(phns)):
+                                if phns[next] != '_': nextph = phns[next]; break
+                            f.write('{0}-{1}+{2} #{3}:{4}\n'.format(prevph, ph, nextph, pnum, phnum))
                 f.write('__\n')
-                for phnum, ph in enumerate(phns):
-                    if ph == '_':
-                        f.write('_ #{0}:{1}\n'.format(pnum, phnum))
-                    else:
-                        prevph, nextph = '_', '_'
-                        for prev in range(phnum-1, -1, -1):
-                            if phns[prev] != '_': prevph = phns[prev]; break
-                        for next in range(phnum+1, len(phns)):
-                            if phns[next] != '_': nextph = phns[next]; break
-                        f.write('{0}-{1}+{2} #{3}:{4}\n'.format(prevph, ph, nextph, pnum, phnum))
-            f.write('__\n')
 
         # Make a recipe for the alignment
 
         with open(recipe, 'w') as f:
-            f.write('audio=%s transcript=%s alignment=%s speaker=UNK\n' % (audiofile, alignfile, outfile))
+            for fidx, finfo in enumerate(self.audiofiles):
+                f.write('audio={0} transcript={1} alignment={2} speaker=UNK\n'.format(
+                        finfo['files'][0]['file'], alignfiles[fidx], outfiles[fidx]))
 
         # Run the Viterbi alignment
-
-        cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
 
         cmd = [bin('align'),
                '-r', recipe, '-i', '1',
@@ -250,10 +275,9 @@ class AaltoASR(object):
                '--beam', str(self.args.align_beam),
                '--sbeam', str(self.args.align_sbeam)]
         cmd.extend(self.margs)
-        if call(cmd, stdout=cmd_out, stderr=cmd_out) != 0:
-            err('align failed', exit=1)
+        self.run(cmd, batchargs=lambda i, n: ('-B', str(n), '-I', str(i)))
 
-        self.alignment = outfile
+        self.alignments = outfiles
 
 
     def phone_probs(self):
@@ -269,10 +293,13 @@ class AaltoASR(object):
         # Construct an input recipe
 
         with open(recipe, 'w') as f:
-            for i, audiofile in enumerate(self.audiofiles):
-                lnafile = join(self.workdir, 'input-{0}.lna'.format(i))
-                lnafiles.append(lnafile)
-                f.write('audio={0} lna={1} speaker=UNK\n'.format(audiofile['file'], lnafile))
+            for fidx, finfo in enumerate(self.audiofiles):
+                lnas = []
+                for i, audiofile in enumerate(finfo['files']):
+                    lnafile = join(self.workdir, '{0}-{1}.lna'.format(finfo['id'], i))
+                    lnas.append(lnafile)
+                    f.write('audio={0} lna={1} speaker=UNK\n'.format(audiofile['file'], lnafile))
+                lnafiles.append(lnas)
 
         # Run phone_probs on the files
 
@@ -293,13 +320,16 @@ class AaltoASR(object):
         # Call rec.py on the lna files
 
         lnamap = {}
+        histmap = {}
 
         recipe = join(self.workdir, 'rec.recipe')
         with open(recipe, 'w') as f:
-            for i, lnafile in enumerate(self.lna):
-                lna_id = basename(lnafile)
-                lnamap[lna_id] = i
-                f.write('lna={0}\n'.format(lna_id))
+            for fidx, lnafiles in enumerate(self.lna):
+                for i, lnafile in enumerate(lnafiles):
+                    lna_id = basename(lnafile)
+                    lnamap[lna_id] = (fidx, i)
+                    histmap[(fidx, i)] = len(histmap)
+                    f.write('lna={0}\n'.format(lna_id))
 
         cmd = [bin('rec.py'),
                rootdir, self.mpath, recipe, self.workdir, str(self.args.lmscale),
@@ -310,10 +340,10 @@ class AaltoASR(object):
 
         # Parse the recognizer output to extract recognition result and state segmentation
 
-        rec_lna = -1
+        rec_file, rec_filepart = -1, -1
         rec_start = 0
-        rec_trans = [[] for i in self.lna]
-        rec_seg = [[] for i in self.lna]
+        rec_trans = [[[] for i in lnafiles] for lnafiles in self.lna]
+        rec_seg = [[[] for i in lnafiles] for lnafiles in self.lna]
 
         re_lna = re.compile(r'^LNA: (.*)$')
         re_trans = re.compile(r'^REC: (.*)$')
@@ -322,29 +352,27 @@ class AaltoASR(object):
         for line in rec_out.splitlines():
             m = re_lna.match(line)
             if m is not None:
-                rec_lna = lnamap[m.group(1)]
-                rec_start = self.audiofiles[rec_lna]['start']
+                rec_file, rec_filepart = lnamap[m.group(1)]
+                rec_start = self.audiofiles[rec_file]['files'][rec_filepart]['start']
                 continue
             m = re_trans.match(line)
             if m is not None:
-                rec_trans[rec_lna].append(m.group(1))
+                rec_trans[rec_file][rec_filepart].append(m.group(1))
                 continue
             m = re_seg.match(line)
             if m is not None:
                 start, end, state = m.group(1, 2, 3)
-                rec_seg[rec_lna].append((rec_start+int(start), rec_start+int(end), int(state)))
+                rec_seg[rec_file][rec_filepart].append((rec_start+int(start), rec_start+int(end), int(state)))
                 continue
 
-        rec_trans = [i for l in rec_trans for i in l]
-        rec_seg = [i for l in rec_seg for i in l]
+        rec_trans = [[i for l in translist for i in l] for translist in rec_trans]
+        rec_seg = [[i for l in seglist for i in l] for seglist in rec_seg]
 
-        if not rec_trans:
+        if not all(trans for trans in rec_trans):
             sys.stderr.write(rec_out)
             err('unable to find recognition transcript in output', exit=1)
 
-        rec_trans = ' <w> '.join(rec_trans)
-
-        self.rec = rec_trans.strip()
+        self.rec = [' <w> '.join(trans).strip() for trans in rec_trans]
 
         fstep = self.model['fstep']
 
@@ -353,46 +381,69 @@ class AaltoASR(object):
         if 'segphone' in self.mode or self.tg:
             labels = get_labels(self.mpath + '.ph')
 
-            alignment = join(self.workdir, 'rec.align')
-            with open(alignment, 'w', encoding='iso-8859-1') as f:
-                for start, end, state in rec_seg:
-                    f.write('%d %d %s\n' % (start*fstep, end*fstep, labels[state]))
+            self.alignments = []
 
-            self.alignment = alignment
+            for fidx, finfo in enumerate(self.audiofiles):
+                alignment = join(self.workdir, '{0}.align'.format(finfo['id']))
+                with open(alignment, 'w', encoding='iso-8859-1') as f:
+                    for start, end, state in rec_seg[fidx]:
+                        f.write('%d %d %s\n' % (start*fstep, end*fstep, labels[state]))
+                self.alignments.append(alignment)
 
         # If necessary, parse the generated word history file
 
         if 'segmorph' in self.mode or 'segword' in self.mode or self.tg:
             re_line = re.compile(r'^(\S+)\s+(\d+)')
-            self.morphseg = []
+            self.morphsegs = []
 
-            for idx, audiofile in enumerate(self.audiofiles):
+            for fidx, finfo in enumerate(self.audiofiles):
                 morphseg = []
-                file_start = audiofile['start']
-                prev_end = file_start
 
-                with open(join(self.workdir, 'wordhist-{0}'.format(idx)), 'r', encoding='iso-8859-1') as f:
-                    for line in f:
-                        m = re_line.match(line)
-                        if m is None: continue # skip malformed
-                        morph, end = m.group(1), file_start + int(m.group(2))
-                        morphseg.append((prev_end*fstep, end*fstep, morph))
-                        prev_end = end
+                for i, audiofile in enumerate(finfo['files']):
+                    seg = []
+                    file_start = audiofile['start']
+                    prev_end = file_start
 
-                while len(morphseg) > 0 and (morphseg[0][2] == '<s>' or morphseg[0][2] == '<w>'):
-                    morphseg.pop(0)
-                while len(morphseg) > 0 and (morphseg[-1][2] == '</s>' or morphseg[-1][2] == '<w>'):
-                    morphseg.pop()
+                    with open(join(self.workdir, 'wordhist-{0}'.format(histmap[(fidx,i)])), 'r', encoding='iso-8859-1') as f:
+                        for line in f:
+                            m = re_line.match(line)
+                            if m is None: continue # skip malformed
+                            morph, end = m.group(1), file_start + int(m.group(2))
+                            seg.append((prev_end*fstep, end*fstep, morph))
+                            prev_end = end
 
-                if len(morphseg) == 0:
-                    continue
-                if len(self.morphseg) > 0:
-                    self.morphseg.append((self.morphseg[-1][1], morphseg[0][0], '<w>'))
-                self.morphseg.extend(morphseg)
+                    while len(seg) > 0 and (seg[0][2] == '<s>' or seg[0][2] == '<w>'):
+                        seg.pop(0)
+                    while len(seg) > 0 and (seg[-1][2] == '</s>' or seg[-1][2] == '<w>'):
+                        seg.pop()
+
+                    if len(seg) == 0:
+                        continue
+                    if len(morphseg) > 0:
+                        morphseg.append((morphseg[-1][1], seg[0][0], '<w>'))
+                    morphseg.extend(seg)
+
+                self.morphsegs.append(morphseg)
 
 
     def gen_output(self):
         """Construct the requested outputs."""
+
+        out = self.args.output
+        out_started = [False]
+
+        def hdr(text, suffix='\n\n'):
+            if out_started[0]: out.write('\n\n')
+            out.write('### {0}{1}'.format(text, suffix))
+            out_started[0] = True
+
+        for fidx, finfo in enumerate(self.audiofiles):
+            if len(self.audiofiles) > 1:
+                hdr('Input file: {0}'.format(finfo['path']), suffix='\n')
+            self.gen_output_one(fidx, hdr)
+
+    def gen_output_one(self, fidx, hdr):
+        """Construct the requested outputs for one file."""
 
         # Start by parsing the state alignment into a phoneme segmentation
 
@@ -402,7 +453,7 @@ class AaltoASR(object):
             rawseg = []
 
             re_line = re.compile(r'^(\d+) (\d+) ([^\.]+)\.(\d+)(?: #(\d+):(\d+))?')
-            with open(self.alignment, 'r', encoding='iso-8859-1') as f:
+            with open(self.alignments[fidx], 'r', encoding='iso-8859-1') as f:
                 for line in f:
                     m = re_line.match(line)
                     if m is None:
@@ -451,7 +502,7 @@ class AaltoASR(object):
             wordseg = []
 
             at = 0
-            for uttidx, utt in enumerate(self.phones):
+            for uttidx, utt in enumerate(self.phones[fidx]):
                 phstack = []
 
                 for phidx, ph in enumerate(utt['phns']):
@@ -469,7 +520,7 @@ class AaltoASR(object):
 
                 wseg = []
 
-                for w in intersperse(self.phones[uttidx]['words'], '_'):
+                for w in intersperse(self.phones[fidx][uttidx]['words'], '_'):
                     start, end = 0, 0
                     for phnum, ph in enumerate(w.replace('-', '_')):
                         if phnum == 0: start = phstack[0][0]
@@ -484,7 +535,7 @@ class AaltoASR(object):
         if ('segword' in self.mode or self.tg) and self.tool == 'rec':
             wordseg = []
 
-            for issep, group in groupby(self.morphseg, lambda item: item[2] == '<s>' or item[2] == '</s>'):
+            for issep, group in groupby(self.morphsegs[fidx], lambda item: item[2] == '<s>' or item[2] == '</s>'):
                 if issep: continue
 
                 utt = []
@@ -501,28 +552,22 @@ class AaltoASR(object):
         out = self.args.output
         srate = float(self.model['srate'])
 
-        out_started = [False]
-        def hdr(text):
-            if out_started[0]: out.write('\n\n\n')
-            out.write('### %s\n\n' % text)
-            out_started[0] = True
-
         if 'trans' in self.mode:
             hdr('Recognizer transcript:')
             if not self.args.raw:
-                for utt in self.rec.split('<s>'):
+                for utt in self.rec[fidx].split('<s>'):
                     utt = utt.replace('</s>', '')
                     utt = utt.replace(' ', '')
                     utt = utt.replace('<w>', ' ').strip()
                     if len(utt) > 0:
                         out.write('%s\n' % utt)
             else:
-                out.write('%s\n' % self.rec)
+                out.write('%s\n' % self.rec[fidx])
 
         if 'trans' in self.mode and self.args.trans:
             hdr('Recognition accuracy:')
-            phones = text2phn(self.args.trans, self.workdir, expand=not self.args.noexp)
-            sclite(out, self.rec, phones, self.workdir)
+            phones = text2phn(self.transfiles[fidx], self.workdir, expand=not self.args.noexp)
+            sclite(out, self.rec[fidx], phones, self.workdir)
 
         if 'segword' in self.mode:
             hdr('Word-level segmentation:')
@@ -637,14 +682,15 @@ item []:
     def adapt(self, output):
         """Generate a CMLLR adaptation transform from aligned output."""
 
-        if len(self.audiofiles) != 1: err('impossible: adaptation with multiple files', exit=1)
-        audiofile = self.audiofiles[0]['file']
+        if any(len(f['files']) != 1 for f in self.audiofiles):
+            err('impossible: adaptation with splitting enabled', exit=1)
 
         self.log('training CMLLR adaptation matrix')
 
         recipe = join(self.workdir, 'adapt.recipe')
         with open(recipe, 'w') as f:
-            f.write('audio={0} alignment={1} speaker=UNK\n'.format(audiofile, self.alignment))
+            for fidx, finfo in enumerate(self.audiofiles):
+                f.write('audio={0} alignment={1} speaker=UNK\n'.format(finfo['files'][0]['file'], self.alignments[fidx]))
 
         spk = join(self.workdir, 'adapt.spk')
         with open(spk, 'w') as f:
@@ -850,7 +896,7 @@ def get_labels(phfile):
 
     return labels
 
-def split_audio(seglen, infile, workdir, model):
+def split_audio(seglen, infile, basepath, model):
     """Split an input audio file to approximately seglen-second segments,
     at more or less silent positions if possible.  Frame size used when
     splitting will match the frame size of the model, and the output list
@@ -921,7 +967,7 @@ def split_audio(seglen, infile, workdir, model):
         starts = start*framesize
         lens = (end-start)*framesize
 
-        audiofile = join(workdir, 'input-{0}.wav'.format(i))
+        audiofile = '{0}-{1}.wav'.format(basepath, i)
 
         if call([bin('sox'), infile,
                  '-t', 'wav', '-r', str(srate), '-b', '16', '-e', 'signed-integer', '-c', '1',

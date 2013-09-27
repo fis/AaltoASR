@@ -90,7 +90,12 @@ output):
 
     aaltoasr-align -T `speech.textgrid` -t `speech.txt` `speech.wav`
 
-See the section "Adaptation" for some further examples.
+Recognize or align multiple files at once, on (up to) 4 cores:
+
+    aaltoasr-rec -n 4 speech1.wav speech2.wav
+    aaltoasr-align -n 4 -t speech1.txt -t speech2.txt speech1.wav speech2.wav
+
+See the section "Adaptation" for examples of `aaltoasr-adapt` use.
 
 ## Option reference
 
@@ -100,8 +105,8 @@ the descriptions of individual arguments.
 
 The overall command lines have the form:
 
-    aaltoasr-rec [options] input
-    aaltoasr-align [options] -t transcript input
+    aaltoasr-rec [options] input [input ...]
+    aaltoasr-align [options] -t transcript [-t transcript ...] input [input ...]
 
 The input file can be in any format accepted by the `sox` utility;
 type `sox -h | grep "FILE FORMATS"` (after loading the `aaltoasr`
@@ -111,10 +116,11 @@ The following options are available:
 
 * **-t *file*, --trans *file*** (required for `aaltoasr-align`)  
 Specifies that *file* contains a transcript of the contents of the
-input audio file.  For `aaltoasr-rec`, it is used to compute the
+input audio file.  For `aaltoasr-rec`, it is used to compute
 recognition error rates.  For `aaltoasr-align`, the sequence of
 phonemes expected in the input file is taken directly from the
-transcript.
+transcript.  If multiple input files are provided, the `-t` option (if
+present) must also be repeated the corresponding number of times.
 
 * **-a *file*, --adapt *file***  
 Provide a speaker adaptation file (generated with `aaltoasr-adapt`).
@@ -139,26 +145,23 @@ The following terms are known:
 In addition to the plaintext outputs, write all segmentation levels to
 *file* in the Praat TextGrid format.
 
+* **-r, --raw** (`aaltoasr-rec` only)  
+Normally, the recognize transcript is postprocessed to a more
+human-readable format, by removing morph breaks and converting word
+break tags to spaces.  Pass this flag to instead get the raw output of
+the recognizer as-is.
+
 * **-s *[S]*, --split *[S]*** (`aaltoasr-rec` only)  
 Split the input audio to segments of approximately *S* (by default,
 60) seconds.  The splitting is done using a heuristic that attempts to
 select a silent period of the input file, but this is not guaranteed
 to work.
 
-* **-n *N*, --cores *N*** (`aaltoasr-rec` with `-s` only)  
+* **-n *N*, --cores *N***  
 Run the recognition process in parallel on up to *N* cores.  This
 parallelization only works when there are multiple independent files
-to process, and therefore only has an effect when used in conjunction
-with the `-s`/`--split` option.  To parallelize recognition or
-alignment of a set of files (with separate transcripts if doing
-alignment), simply run multiple instances of the script.  The `xargs
--n 1 -P <N>` command may be helpful in automating this.
-
-* **-r, --raw** (`aaltoasr-rec` only)  
-Normally, the recognize transcript is postprocessed to a more
-human-readable format, by removing morph breaks and converting word
-break tags to spaces.  Pass this flag to instead get the raw output of
-the recognizer as-is.
+to process, and therefore only has an effect when used with multiple
+input files or in conjunction with the `-s`/`--split` option.
 
 * **-v, --verbose**  
 Print output also from the recognition/alignment tools.
@@ -207,43 +210,50 @@ environment) differ much from what's expected.  To use the adaptation,
 train a profile with `aaltoasr-adapt`, and then use that with
 `aaltoasr-rec` or `aaltoasr-align` as follows:
 
-    aaltoasr-adapt -t training.txt training.wav speaker.conf
+    aaltoasr-adapt -o speaker.conf -t training.txt training.wav
     aaltoasr-rec -a speaker.conf test.wav
-
-For simplicitly, only a single adaptation training audio file is
-supported.  If a transcript is provided with the `-t` parameter to
-`aaltoasr-adapt`, supervised adaptation will be done; if the `-t`
-parameter is not used, the adaptation is unsupervised.  Internally,
-for supervised adaptation the transcript and audio will be aligned
-with `aaltoasr-align`, while for unsupervised adaptation the audio
-will be processed with `aaltoasr-rec` first.  Whether unsupervised
-adaptation improves the results or not depends somewhat on the quality
-of this initial recognition step.
 
 For a single test file with unknown contents, it is also possible to
 do a two-pass recognition process:
 
-    aaltoasr-adapt test.wav speaker.conf
+    aaltoasr-adapt -o speaker.conf test.wav
     aaltoasr-rec -a speaker.conf test.wav
 
 Similarly, it is possible to do a two-pass alignment as follows:
 
-    aaltoasr-adapt -t test.txt test.wav speaker.conf
+    aaltoasr-adapt -o speaker.conf -t test.txt test.wav
     aaltoasr-align -a speaker.conf -t test.txt test.wav
 
-The `aaltoasr-adapt` script knows of the following arguments:
+Multiple adaptation input files can be used in a manner consistent
+with `aaltoasr-rec`/`aaltoasr-align`.  If a transcript is provided
+with the `-t` parameter to `aaltoasr-adapt`, supervised adaptation
+will be done; if the `-t` parameter is not used, the adaptation is
+unsupervised.  Internally, for supervised adaptation the transcript
+and audio will be aligned with `aaltoasr-align`, while for
+unsupervised adaptation the audio will be processed with
+`aaltoasr-rec` first.  Whether unsupervised adaptation is beneficial
+at all depends somewhat on the quality of this initial recognition
+step.
+
+The `aaltoasr-adapt` script knows of the following options:
+
+* **-o *file*, --output *file*** (required)  
+Write the generated adaptation data to this file.
 
 * **-t *file*, --trans *file***  
-Provide a transcript of the audio file for supervised adaptation.
+Provide a transcript of the audio file for supervised adaptation.  If
+multiple inputs are specified, the `-t` option must be correspondingly
+repeated.
 
 * **-v, --verbose**  
 Print output also from the recognition/alignment/adaptation tools.
 
-* **-a *A*, --args *A***  
-Pass the string *A* as extra arguments to the underlying invocation of
-`aaltoasr-align` (supervised) or `aaltoasr-rec` (unsupervised).  This
-can be used to tune the alignment/recognition parameters for the
-adaptation process.
+* **-a *A B ...*, --args *A B ...***  
+Pass the arguments *A B ...* as extra arguments to the underlying
+invocation of `aaltoasr-align` (supervised) or `aaltoasr-rec`
+(unsupervised).  The `-a` option must be the last thing on the command
+line.  This option can be used to tune the alignment/recognition
+parameters for the adaptation process.
 
 ## Technical details
 
