@@ -219,7 +219,7 @@ main(int argc, char *argv[])
     // Read recipe file
     recipe.read(io::Stream(config["recipe"].get_str()),
                 config["batch"].get_int(), config["bindex"].get_int(),
-                true);
+                false);
 
     win_size = config["swins"].get_int();
     Viterbi viterbi(model, fea_gen, &phn_reader);
