@@ -24,7 +24,7 @@ CSC Hippu environment.
 
 # Overall settings and paths to data files
 
-rootdir = '/akulabra/home/t40511/htkallas/aaltoasr'
+rootdir = '/work/t40511_research/htkallas/aaltoasr'
 models = {
     '16k': { 'path': 'speecon_mfcc_gain3500_occ225_1.11.2007_20', 'srate': 16000, 'fstep': 128, 'default': 1 },
     '8k': { 'path': 'speechdat_mfcc_gain4000_occ350_13.2.2008_20', 'srate': 8000, 'fstep': 128 }
@@ -146,7 +146,7 @@ class AaltoASR(object):
 
         self.transfiles = None
         if self.args.trans:
-            self.transfiles = [open(f) for f in self.args.trans]
+            self.transfiles = [open(f, 'rb') for f in self.args.trans]
             if len(self.transfiles) != len(self.args.input):
                 err('number of transcript files does not match number of inputs', exit=2)
 
@@ -685,12 +685,17 @@ item []:
         if any(len(f['files']) != 1 for f in self.audiofiles):
             err('impossible: adaptation with splitting enabled', exit=1)
 
+        self.log('cleaning up aligned transcriptions')
+
+        for a in self.alignments:
+            alignment_fixup(a, a+'.fixup')
+
         self.log('training CMLLR adaptation matrix')
 
         recipe = join(self.workdir, 'adapt.recipe')
         with open(recipe, 'w') as f:
             for fidx, finfo in enumerate(self.audiofiles):
-                f.write('audio={0} alignment={1} speaker=UNK\n'.format(finfo['files'][0]['file'], self.alignments[fidx]))
+                f.write('audio={0} alignment={1}.fixup speaker=UNK\n'.format(finfo['files'][0]['file'], self.alignments[fidx]))
 
         spk = join(self.workdir, 'adapt.spk')
         with open(spk, 'w') as f:
@@ -765,13 +770,16 @@ def text2phn(input, workdir, expand=True):
 
     # Read in, split to trimmed paragraphs
 
-    try: input = input.read()
-    except: pass
+    if 'read' in dir(input):
+        input = input.read()
 
-    if not type(input) is str:
+    if type(input) is bytes:
         try: input = input.decode('utf-8')
         except UnicodeError:
             input = input.decode('iso-8859-1')
+
+    if type(input) is not str:
+        err('unable to understand input: {0}'.format(repr(input)), exit=1)
 
     input = filter(None, (re.sub(r'\s+', ' ', para.strip()) for para in input.split('\n\n')))
 
@@ -801,6 +809,32 @@ def text2phn(input, workdir, expand=True):
     # Add phoneme lists
 
     return [{ 'words': para, 'phns': list('_'.join(para).replace('-', '_')) } for para in input]
+
+# Fixup for discontinuity-caused unexpected states in alignment files
+
+def alignment_fixup(infile, outfile):
+    re_line = re.compile(r'^(\d+)( \d+ [^\.]+\.(\d+).*)$')
+
+    with open(infile, 'r', encoding='iso-8859-1') as fi, open(outfile, 'w', encoding='iso-8859-1') as fo:
+        pstate = -2
+        pstart = None
+
+        for line in fi:
+            line = line.rstrip('\n')
+            m = re_line.match(line)
+            if m is None:
+                err('invalid alignment line: %s' % line, exit=1)
+            start, rest, state = m.group(1), m.group(2), int(m.group(3))
+
+            if pstate == -2 or state == 0 or state == pstate+1:
+                if pstart is None:
+                    fo.write(line + '\n')
+                else:
+                    fo.write(pstart + rest + '\n')
+                pstate, pstart = state, None
+            else:
+                pstate = -1
+                if pstart is None: pstart = start
 
 # SCLITE recognition transcript scoring
 
