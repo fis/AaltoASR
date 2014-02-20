@@ -461,6 +461,8 @@ class AaltoASR(object):
                     phpos = (int(m.group(5)), int(m.group(6))) if m.group(5) else None
                     rawseg.append((int(m.group(1)), int(m.group(2)), m.group(3), int(m.group(4)), phpos))
 
+            limits = (rawseg[0][0], rawseg[-1][1])
+
             # Recover the phoneme level segments from the state level alignment file
 
             phseg = []
@@ -599,87 +601,25 @@ class AaltoASR(object):
         # Generate Praat TextGrid output
 
         if self.tg:
-            tgfile = self.args.tg
+            tiers = []
 
-            tgfile.write(('''
-File type = "ooTextFile"
-Object class = "TextGrid"
+            tiers.append({ 'name': 'utterance',
+                           'data': [(utt[0][0],
+                                     utt[-1][1],
+                                     ' '.join(w[2] for w in utt))
+                                    for utt in wordseg] })
 
-xmin = %.3f
-xmax = %.3f
-tiers? <exists>
-size = %d
-item []:
-''' % (min(uttseg[0][0][0], wordseg[0][0][0]) / srate,
-       max(uttseg[-1][-1][1], wordseg[-1][-1][1]) / srate,
-       4 if self.tool == 'rec' else 3)).lstrip())
-
-            tierno = 1
-
-            # Utterance tier
-
-            tgfile.write('    item[%d]:\n' % tierno); tierno += 1
-            tgfile.write('        class = "IntervalTier"\n')
-            tgfile.write('        name = "utterance"\n')
-            tgfile.write('        xmin = %.3f\n' % (wordseg[0][0][0] / srate))
-            tgfile.write('        xmax = %.3f\n' % (wordseg[-1][-1][1] / srate))
-            tgfile.write('        intervals: size = %d\n' % len(wordseg))
-
-            for uttnum, utt in enumerate(wordseg):
-                tgfile.write('        intervals [%d]:\n' % (uttnum+1))
-                tgfile.write('            xmin = %.3f\n' % (utt[0][0] / srate))
-                tgfile.write('            xmax = %.3f\n' % (utt[-1][1] / srate))
-                tgfile.write('            text = "%s"\n' % ' '.join(w[2] for w in utt))
-
-            # Word tier
-
-            tgfile.write('    item[%d]:\n' % tierno); tierno += 1
-            tgfile.write('        class = "IntervalTier"\n')
-            tgfile.write('        name = "word"\n')
-            tgfile.write('        xmin = %.3f\n' % (wordseg[0][0][0] / srate))
-            tgfile.write('        xmax = %.3f\n' % (wordseg[-1][-1][1] / srate))
-            tgfile.write('        intervals: size = %d\n' % sum(len(utt) for utt in wordseg))
-
-            for wnum, word in enumerate(w for utt in wordseg for w in utt):
-                tgfile.write('        intervals [%d]:\n' % (wnum+1))
-                tgfile.write('            xmin = %.3f\n' % (word[0] / srate))
-                tgfile.write('            xmax = %.3f\n' % (word[1] / srate))
-                tgfile.write('            text = "%s"\n' % word[2])
-
-            # Morph tier
+            tiers.append({ 'name': 'word',
+                           'data': [word for utt in wordseg for word in utt] })
 
             if self.tool == 'rec':
-                fmorphseg = [morph for ms in self.morphsegs for morph in ms if morph[2][0] != '<']
+                tiers.append({ 'name': 'morph',
+                               'data': [morph for ms in self.morphsegs for morph in ms if morph[2][0] != '<'] })
 
-                tgfile.write('    item[%d]:\n' % tierno); tierno += 1
-                tgfile.write('        class = "IntervalTier"\n')
-                tgfile.write('        name = "morph"\n')
-                tgfile.write('        xmin = %.3f\n' % (fmorphseg[0][0] / srate))
-                tgfile.write('        xmax = %.3f\n' % (fmorphseg[-1][1] / srate))
-                tgfile.write('        intervals: size = %d\n' % len(fmorphseg))
+            tiers.append({ 'name': 'phone',
+                           'data': [ph[:3] for ph in phseg if ph[2][0] != '_'] })
 
-                for morphnum, morph in enumerate(fmorphseg):
-                    tgfile.write('        intervals [%d]:\n' % (morphnum+1))
-                    tgfile.write('            xmin = %.3f\n' % (morph[0] / srate))
-                    tgfile.write('            xmax = %.3f\n' % (morph[1] / srate))
-                    tgfile.write('            text = "%s"\n' % morph[2])
-
-            # Phoneme tier
-
-            fphseg = [ph for ph in phseg if ph[2][0] != '_']
-
-            tgfile.write('    item[%d]:\n' % tierno); tierno += 1
-            tgfile.write('        class = "IntervalTier"\n')
-            tgfile.write('        name = "phone"\n')
-            tgfile.write('        xmin = %.3f\n' % (fphseg[0][0] / srate))
-            tgfile.write('        xmax = %.3f\n' % (fphseg[-1][1] / srate))
-            tgfile.write('        intervals: size = %d\n' % len(fphseg))
-
-            for phnum, ph in enumerate(fphseg):
-                tgfile.write('        intervals [%d]:\n' % (phnum+1))
-                tgfile.write('            xmin = %.3f\n' % (ph[0] / srate))
-                tgfile.write('            xmax = %.3f\n' % (ph[1] / srate))
-                tgfile.write('            text = "%s"\n' % ph[2])
+            tg_write(self.args.tg, tiers, limits, srate)
 
 
     def adapt(self, output):
@@ -874,6 +814,49 @@ def sclite(out, rec, phones, workdir):
         for line in scout.split('\n'):
             if line.find('SPKR') >= 0 or line.find('Sum/Avg') >= 0:
                 out.write(line + '\n')
+
+# TextGrid output formatting
+
+def tg_write(tgfile, tiers, limits, srate):
+    tgfile.write('''
+File type = "ooTextFile"
+Object class = "TextGrid"
+
+xmin = {0:.3f}
+xmax = {1:.3f}
+tiers? <exists>
+size = {2}
+item []:
+'''.format(limits[0] / srate, limits[1] / srate, len(tiers)).lstrip())
+
+    #format(min(t['data'][0][0] for t in tiers) / srate,
+    #       max(t['data'][-1][1] for t in tiers) / srate,
+    #       len(tiers)).lstrip())
+
+    for tierno, tier in enumerate(tiers):
+        tdata = []
+
+        at = limits[0]
+        for start, end, label in tier['data']:
+            if start > at:
+                tdata.append((at, start, ''))
+            tdata.append((start, end, label))
+            at = end
+        if at < limits[1]:
+            tdata.append((at, limits[1], ''))
+
+        tgfile.write('    item[{0}]:\n'.format(tierno + 1))
+        tgfile.write('        class = "IntervalTier"\n')
+        tgfile.write('        name = "{0}"\n'.format(tier['name']))
+        tgfile.write('        xmin = {0:.3f}\n'.format(tdata[0][0] / srate))
+        tgfile.write('        xmax = {0:.3f}\n'.format(tdata[-1][1] / srate))
+        tgfile.write('        intervals: size = {0}\n'.format(len(tdata)))
+
+        for num, (start, end, label) in enumerate(tdata):
+            tgfile.write('        intervals [{0}]:\n'.format(num + 1))
+            tgfile.write('            xmin = {0:.3f}\n'.format(start / srate))
+            tgfile.write('            xmax = {0:.3f}\n'.format(end / srate))
+            tgfile.write('            text = "{0}"\n'.format(label))
 
 # Miscellaneous helpers
 
