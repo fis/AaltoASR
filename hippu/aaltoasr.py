@@ -579,17 +579,20 @@ class AaltoASR(object):
 
         if 'segmorph' in self.mode:
             hdr('Morpheme[*]-level segmentation:   ([*] statistical)')
-            for start, end, morph in self.morphseg:
-                if morph == '<s>' or morph == '</s>': continue
-                elif morph == '<w>': out.write('\n')
-                else: out.write('%.3f %.3f %s\n' % (start/srate, end/srate, morph))
+            for utt in intersperse(self.morphsegs, ()):
+                if len(utt) == 0: out.write('\n\n')
+                else:
+                    for start, end, morph in utt:
+                        if morph == '<s>' or morph == '</s>': continue
+                        elif morph == '<w>': out.write('\n')
+                        else: out.write('%.3f %.3f %s\n' % (start/srate, end/srate, morph))
 
         if 'segphone' in self.mode:
             hdr('Phoneme-level segmentation:')
             for utt in intersperse(uttseg, ()):
                 if len(utt) == 0: out.write('\n\n')
                 else:
-                    for start, end, ph in utt:
+                    for start, end, ph, phpos in utt:
                         if ph == '_': out.write('\n')
                         else: out.write('%.3f %.3f %s\n' % (start/srate, end/srate, ph))
 
