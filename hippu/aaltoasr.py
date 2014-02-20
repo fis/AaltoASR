@@ -649,7 +649,7 @@ item []:
             # Morph tier
 
             if self.tool == 'rec':
-                fmorphseg = [morph for morph in self.morphseg if morph[2][0] != '<']
+                fmorphseg = [morph for ms in self.morphsegs for morph in ms if morph[2][0] != '<']
 
                 tgfile.write('    item[%d]:\n' % tierno); tierno += 1
                 tgfile.write('        class = "IntervalTier"\n')
