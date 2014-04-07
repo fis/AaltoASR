@@ -510,6 +510,9 @@ class AaltoASR(object):
                 for phidx, ph in enumerate(utt['phns']):
                     if (uttidx, phidx) in phonepos:
                         start, end, aph = phonepos[(uttidx, phidx)]
+                        # push things forward if necessary because of gaps
+                        if start < at: start = at
+                        if end <= start: end = start + 1
                         if aph != ph:
                             err('segmenter confused: phoneme mismatch at {0}/{1}: {2} != {3}'.format(uttidx, phidx, aph, ph), exit=1)
                         at = end
@@ -517,7 +520,8 @@ class AaltoASR(object):
                         if not warned:
                             self.log('warning: gaps in aligned output (check transcript?)')
                             warned = True
-                        start, end = at, at
+                        start, end = at, at+1
+                        at = at+1
                     phstack.append((start, end, ph))
 
                 wseg = []
