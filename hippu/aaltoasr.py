@@ -26,8 +26,12 @@ CSC Hippu environment.
 
 rootdir = '/work/t40511_research/htkallas/aaltoasr'
 models = {
-    '16k': { 'path': 'speecon_mfcc_gain3500_occ225_1.11.2007_20', 'srate': 16000, 'fstep': 128, 'default': 1 },
-    '8k': { 'path': 'speechdat_mfcc_gain4000_occ350_13.2.2008_20', 'srate': 8000, 'fstep': 128 }
+    '16k': { 'path': 'speecon_all_multicondition_mmi_kld0.002_6',
+             'srate': 16000, 'fstep': 128,
+             'regtree': True,
+             'default': True },
+    '16k-ml': { 'path': 'speecon_mfcc_gain3500_occ225_1.11.2007_20', 'srate': 16000, 'fstep': 128 },
+    '8k': { 'path': 'speechdat_mfcc_gain4000_occ350_13.2.2008_20', 'srate': 8000, 'fstep': 128 },
     }
 
 def bin(prog):
@@ -55,7 +59,7 @@ help = {
                   'a word-level, statistical-morpheme-level or phoneme-level segmentation, '
                   'respectively. The listed items will be included in the plaintext output. '
                   'The default is "trans". For more details, see the User\'s Guide at: '
-                  'http://users.ics.aalto.fi/htkallas/guide.html')
+                  'http://research.spa.aalto.fi/speech/aaltoasr-guide/')
         },
     'align': {
         'desc': 'Align a transcription to a speech audio file.',
@@ -67,7 +71,7 @@ help = {
                   'denoting a word-level or phoneme-level segmentation, respectively. The listed '
                   'items will be included in the plaintext output. The default is "segword".  '
                   'For more details, see the User\'s Guide at: '
-                  'http://users.ics.aalto.fi/htkallas/guide.html')
+                  'http://research.spa.aalto.fi/speech/aaltoasr-guide/')
         }
     }
 
@@ -150,6 +154,13 @@ class AaltoASR(object):
             if len(self.transfiles) != len(self.args.input):
                 err('number of transcript files does not match number of inputs', exit=2)
 
+        self.adaptcfg = { 'feature': False, 'model': False }
+        if self.args.adapt is not None:
+            with open(self.args.adapt) as f:
+                for line in f:
+                    if line.find('feature cmllr') >= 0: self.adaptcfg['feature'] = True
+                    if line.find('model cmllr') >= 0: self.adaptcfg['model'] = True
+
         self.mode = set()
         for word in self.args.mode.split(','):
             if word not in thelp['modes']:
@@ -159,9 +170,12 @@ class AaltoASR(object):
         self.tg = self.args.tg is not None
 
         self.model = models[self.args.model]
+        if self.adaptcfg['model'] and 'regtree' not in self.model:
+            err('selected model {0} not compatible with -r adaptation'.format(self.args.model), exit=2)
         self.mpath = join(rootdir, 'model', self.model['path'])
-        self.mcfg = self.mpath + ('.adapt.cfg' if self.args.adapt else '.cfg')
+        self.mcfg = self.mpath + ('.adapt.cfg' if self.adaptcfg['feature'] else '.cfg')
         self.margs = ['-b', self.mpath, '-c', self.mcfg]
+        self.mgcl = self.mpath + '.regtree.gcl' if self.adaptcfg['model'] else self.mpath + '.gcl'
 
         if self.args.adapt is not None:
             self.margs.extend(('-S', self.args.adapt))
@@ -304,7 +318,7 @@ class AaltoASR(object):
         # Run phone_probs on the files
 
         cmd = [bin('phone_probs'),
-               '-r', recipe, '-C', self.mpath+'.gcl', '-i', '1',
+               '-r', recipe, '-C', self.mgcl, '-i', '1',
                '--eval-ming', '0.2']
         cmd.extend(self.margs)
         self.run(cmd, batchargs=lambda i, n: ('-B', str(n), '-I', str(i)))
@@ -626,7 +640,7 @@ class AaltoASR(object):
             tg_write(self.args.tg, tiers, limits, srate)
 
 
-    def adapt(self, output):
+    def adapt(self, output, modeladapt):
         """Generate a CMLLR adaptation transform from aligned output."""
 
         if any(len(f['files']) != 1 for f in self.audiofiles):
@@ -644,17 +658,46 @@ class AaltoASR(object):
             for fidx, finfo in enumerate(self.audiofiles):
                 f.write('audio={0} alignment={1}.fixup speaker=UNK\n'.format(finfo['files'][0]['file'], self.alignments[fidx]))
 
-        spk = join(self.workdir, 'adapt.spk')
-        with open(spk, 'w') as f:
-            f.write('\n'.join(['speaker UNK', '{', 'feature cmllr', '{', '}', '}', '']))
+        # prepare speaker configuration file based on previous adaptation
+
+        if (not modeladapt and self.adaptcfg['feature']) or (modeladapt and self.adaptcfg['model']):
+            # use existing speaker config directly
+            spk = self.args.adapt
+        elif self.args.adapt is not None:
+            # add current adaptation style to existing speaker config
+            spk = join(self.workdir, 'adapt.spk')
+            with open(spk, 'w') as f, open(self.args.adapt) as oldf:
+                done = False
+                for line in oldf:
+                    f.write(line)
+                    if not done and line.find('{') >= 0:
+                        f.write('\n'.join(['{0} cmllr'.format('model' if modeladapt else 'feature'),
+                                           '{', '}', '']))
+                        done = True
+        else:
+            # make new empty speaker configuration
+            spk = join(self.workdir, 'adapt.spk')
+            with open(spk, 'w') as f:
+                f.write('\n'.join(['speaker UNK', '{',
+                                   '{0} cmllr'.format('model' if modeladapt else 'feature'),
+                                   '{', '}', '}', '']))
 
         cmd_out = sys.stderr if self.args.verbose else open(os.devnull, 'w')
 
-        if call([bin('mllr'),
-                 '-b', self.mpath, '-c', self.mpath+'.adapt.cfg',
-                 '-M', 'cmllr', '-O', '-i', '1',
-                 '-r', recipe, '-S', spk,
-                 '-o', output], stdout=cmd_out, stderr=cmd_out) != 0:
+        cmd = [bin('mllr'),
+               '-b', self.mpath,
+               '-c', self.mpath + ('.adapt.cfg' if not modeladapt or self.adaptcfg['feature'] else '.cfg'),
+               '-r', recipe, '-S', spk,
+               '-o', output,
+               '-O', '-i', '1']
+        if modeladapt:
+            cmd.extend(('-R', self.mpath + '.regtree'))
+        else:
+            cmd.extend(('-M', 'cmllr'))
+
+        if self.args.verbose:
+            self.log('run: {0}'.format(' '.join(cmd)))
+        if call(cmd, stdout=cmd_out, stderr=cmd_out) != 0:
             err('mllr failed', exit=1)
 
 

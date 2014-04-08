@@ -1,26 +1,5 @@
 # aaltoasr-rec / aaltoasr-align User's Guide
 
-<!---
-
-**Testing the beta version:**
-
-To set things up, type one of the following, depending on the
-environment.  (If your shell is not bash, try typing `bash` first.)
-
-**hippu.csc.fi (hippu3, hippu4):**
-
-    source /v/users/htkallas/aaltoasr/init.sh
-
-**Aalto/SPA systems:**
-
-    source /akulabra/home/t40511/htkallas/aaltoasr/init.sh
-
-**Aalto/ICS workstations:**
-
-    source /share/puhe/htkallas/aaltoasr/init.sh
-
--->
-
 ## Introduction
 
 `aaltoasr-rec` and `aaltoasr-align` are two command-line scripts for
@@ -29,6 +8,7 @@ segmentation (forced-alignment) tasks.  `aaltoasr-adapt` provides
 additional rudimentary speaker adaptation support.
 
 To use the tools, load them in your path with `module load aaltoasr`.
+<!-- (On the Aalto SPA system, use `module load aaltoasr-hippu` instead.) -->
 
 [aaltoasr]: https://github.com/aalto-speech/AaltoASR "AaltoASR github page"
 
@@ -41,7 +21,7 @@ no support for automatically splitting a longer audio file with
 `aaltoasr-align`, as there would be no way to do the corresponding
 splitting on the input transcript.  For `aaltoasr-rec`, the `-s`
 argument can be used to automatically split the file to segments of
-desired size.
+desired size, in order to take advantage of parallel processing.
 
 The acoustic models use cross-word triphone models (i.e., each phoneme
 can have different models depending on the surrounding context),
@@ -175,7 +155,8 @@ Use *dir* as the directory for temporary files.
 * **-M *model*, --model *model***  
 Select *model* as the acoustic model.  The default is `16k`.  The
 following models are known:
-    * `16k`: 16 kHz (slightly) multicondition SPEECON model.
+    * `16k`: 16 kHz multicondition SPEECON model with MMI training.
+    * `16k-ml`: older ML-trained 16 kHz SPEECON model.
     * `8k`: 8 kHz SPEECHDAT model.
 
 * **-L *L*, --lmscale *L*** (`aaltoasr-rec` only)  
@@ -214,7 +195,7 @@ train a profile with `aaltoasr-adapt`, and then use that with
     aaltoasr-rec -a speaker.conf test.wav
 
 For a single test file with unknown contents, it is also possible to
-do a two-pass recognition process:
+do unsupervised adaptation with a two-pass recognition process:
 
     aaltoasr-adapt -o speaker.conf test.wav
     aaltoasr-rec -a speaker.conf test.wav
@@ -224,21 +205,54 @@ Similarly, it is possible to do a two-pass alignment as follows:
     aaltoasr-adapt -o speaker.conf -t test.txt test.wav
     aaltoasr-align -a speaker.conf -t test.txt test.wav
 
+Finally, a full three-pass alignment (for details, see below) can be
+done with:
+
+    aaltoasr-adapt -o pass1.conf -t test.txt test.wav
+    aaltoasr-adapt -p pass1.conf -m -o pass2.conf -t test.txt test.wav
+    aaltoasr-align -a pass2.conf -t test.txt test.wav
+
+Two adaptation styles are supported: a single, global feature-domain
+CMLLR transformation (used by default), and more detailed model-based
+regression tree Gaussian CMLLR adaptation (with the `-m` flag).  The
+former needs very little (few seconds) of adaptation data, while the
+latter can produce a better-adapted model, if sufficient data is
+available.  Both styles can be applied in supervised (transcript of
+adaptation data is known) or unsupervised (contents of adaptation data
+are unknown) mode.
+
+Supervised adaptation is implemented by aligning the transcript and
+the audio with `aaltoasr-align`, while for unsupervised adaptation the
+`aaltoasr-rec` is used instead.  Whether unsupervised adaptation is
+beneficial at all depends somewhat on the quality of this initial
+recognition step.
+
 Multiple adaptation input files can be used in a manner consistent
 with `aaltoasr-rec`/`aaltoasr-align`.  If a transcript is provided
 with the `-t` parameter to `aaltoasr-adapt`, supervised adaptation
 will be done; if the `-t` parameter is not used, the adaptation is
-unsupervised.  Internally, for supervised adaptation the transcript
-and audio will be aligned with `aaltoasr-align`, while for
-unsupervised adaptation the audio will be processed with
-`aaltoasr-rec` first.  Whether unsupervised adaptation is beneficial
-at all depends somewhat on the quality of this initial recognition
-step.
+unsupervised.
+
+You can also perform multipass adaptation, by providing a previously
+generated `speaker.conf` to `aaltoasr-adapt` using the `-p` flag.  The
+specified adaptation will be used when aligning or recognizing the
+adaptation data.  A typical way of using this was shown as the last
+example: training a single global transformation first, then using
+that to realign the adaptation data and train a more detailed
+model-based adaptation.
 
 The `aaltoasr-adapt` script knows of the following options:
 
 * **-o *file*, --output *file*** (required)  
 Write the generated adaptation data to this file.
+
+* **-p *file*, --prev *file***  
+Use an existing adaptation configuration (from a previous pass) when
+aligning or recognizing the adaptation data.
+
+* **-m, --model**  
+Use the model-based adaptation scheme with 64 regression tree classes.
+Currently only the `16k` model supports this.
 
 * **-t *file*, --trans *file***  
 Provide a transcript of the audio file for supervised adaptation.  If
@@ -263,15 +277,7 @@ features not covered by this guide.  The tools can be found in the
 aaltoasr-rec` to locate them.  The [Github page][aaltoasr] will
 hopefully at some point contain detailed documentation of them.
 
-The form of adaptation supported by the scripts is restricted to a
-single feature domain CMLLR transformation.  The underlying toolset
-also supports model-space MLLR (optionally with a regression tree for
-multiple transformations per speaker), but training that is beyond the
-scope of this manual.  However, any speaker configuration can (in
-theory) be used with the scripts.  The speaker identifier used by the
-scripts is `UNK`.
-
-To use custom acoustic models, make a local copy of the (very short)
-`aaltoasr-rec` (or `aaltoasr-align`) script, and have it modify the
-`aaltoasr.models` list before initializing the `AaltoASR` object.
-Absolute paths can be used.
+A reasonable way to use custom acoustic models is to make a local copy
+of the (very short) `aaltoasr-rec` (or `aaltoasr-align`) script, and
+have it modify the `aaltoasr.models` list before initializing the
+`AaltoASR` object.  Absolute paths can be used.

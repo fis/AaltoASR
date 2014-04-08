@@ -9,13 +9,19 @@ parser = argparse.ArgumentParser(
     description='Learn an acoustic model adaptation.',
     usage='%(prog)s [options] -o output [-t transcript [-t transcript ...]] input [input ...] [-a ...]',
     epilog=('For more details, see the User\'s Guide at: '
-            'http://users.ics.aalto.fi/htkallas/guide.html'))
+            'http://research.spa.aalto.fi/speech/aaltoasr-guide/'))
 
 parser.add_argument('input', help='input audio file', nargs='+')
 parser.add_argument('-o', '--output',
                     help='output adaptation file',
                     metavar='file',
                     required=True)
+parser.add_argument('-p', '--prev',
+                    help='previous adaptation configuration',
+                    metavar='file')
+parser.add_argument('-m', '--model',
+                    help='perform model-based regression tree adaptation',
+                    action='store_true')
 parser.add_argument('-t', '--trans',
                     help='input transcript for supervised adaptation',
                     metavar='file',
@@ -44,6 +50,8 @@ else:
 
 if args.verbose:
     tool_args.append('-v')
+if args.prev:
+    tool_args.extend(('-a', args.prev))
 if args.args is not None:
     tool_args.extend(args.args)
 
@@ -54,4 +62,4 @@ with aaltoasr.AaltoASR(tool, args=tool_args) as asr:
         asr.phone_probs()
         asr.rec()
 
-    asr.adapt(args.output)
+    asr.adapt(args.output, args.model)
