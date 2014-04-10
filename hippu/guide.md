@@ -123,7 +123,9 @@ The following terms are known:
 
 * **-T *file*, --tg *file***  
 In addition to the plaintext outputs, write all segmentation levels to
-*file* in the Praat TextGrid format.
+*file* in the Praat TextGrid format.  If multiple input audio files
+were provided, outputs are written to *file*`.1`, *file*`.2`, and so
+on.
 
 * **-r, --raw** (`aaltoasr-rec` only)  
 Normally, the recognize transcript is postprocessed to a more

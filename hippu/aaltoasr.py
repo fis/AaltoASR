@@ -108,7 +108,7 @@ class AaltoASR(object):
         parser.add_argument('-m', '--mode', help='which kind of results to output (see below)', metavar='MODE',
                             default=thelp['defmode'])
         parser.add_argument('-T', '--tg', help='output also a Praat TextGrid segmentation to file', metavar='file',
-                            type=argparse.FileType('w'), default=None)
+                            default=None)
         if tool == 'rec':
             parser.add_argument('-r', '--raw', help='produce raw recognizer output (with morph breaks)',
                                 action='store_true')
@@ -637,7 +637,12 @@ class AaltoASR(object):
             tiers.append({ 'name': 'phone',
                            'data': [ph[:3] for ph in phseg if ph[2][0] != '_'] })
 
-            tg_write(self.args.tg, tiers, limits, srate)
+            if len(self.audiofiles) > 1:
+                tgfile = '{0}.{1}'.format(self.args.tg, fidx+1)
+            else:
+                tgfile = self.args.tg
+            with open(tgfile, 'w') as tgf:
+                tg_write(tgf, tiers, limits, srate)
 
 
     def adapt(self, output, modeladapt):
