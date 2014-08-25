@@ -10,6 +10,7 @@
 #include "HmmSet.hh"
 
 using namespace aku;
+using namespace std;
 
 std::string statistics_file;
 std::string out_model_name;
