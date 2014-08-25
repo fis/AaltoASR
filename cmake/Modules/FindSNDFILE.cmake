@@ -12,6 +12,7 @@ MARK_AS_ADVANCED(SNDFILE_LIBRARY)
 
 # handle the QUIETLY and REQUIRED arguments and set SNDFILE_FOUND to 
 # TRUE if all listed variables are TRUE
+include(FindPackageHandleStandardArgs)
 FIND_PACKAGE_HANDLE_STANDARD_ARGS(SNDFILE
                                   REQUIRED_VARS SNDFILE_LIBRARY
                                   SNDFILE_INCLUDE_DIR )

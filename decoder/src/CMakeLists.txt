@@ -1,7 +1,9 @@
 add_subdirectory( fsalm )
 add_subdirectory( misc )
 add_subdirectory( morpheus )
-add_subdirectory( swig )
+IF(NOT CMAKE_SYSTEM_NAME) # not crosscompiling
+  add_subdirectory( swig )
+ENDIF(NOT CMAKE_SYSTEM_NAME)
 include_directories(".")
 
 set(DECODERSOURCES 
