@@ -9,7 +9,7 @@ if( NOT ((_LANGUAGES_ MATCHES C) OR (_LANGUAGES_ MATCHES CXX)) )
   message(FATAL_ERROR "Cross-compiler FindBLAS only supports C or C++")
 endif( )
 
-find_library(BLAS_LIBRARIES "openblas")
+find_library(BLAS_LIBRARIES "libopenblas.a")
 
 if( BLAS_LIBRARIES )
   cmake_push_check_state()

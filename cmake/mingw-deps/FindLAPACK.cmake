@@ -10,7 +10,7 @@ if( NOT ((_LANGUAGES_ MATCHES C) OR (_LANGUAGES_ MATCHES CXX)) )
 endif( )
 
 if( BLAS_LIBRARIES )
-  set(LAPACK_LIBRARIES ${BLAS_LIBRARIES})
+  set(LAPACK_LIBRARIES ${BLAS_LIBRARIES} "-lgfortran")
   cmake_push_check_state()
   set(CMAKE_REQUIRED_LIBRARIES ${LAPACK_LIBRARIES})
   check_function_exists("cheev_" LAPACK_LIBRARY_WORKS)
