@@ -84,6 +84,6 @@ endforeach(AKU_CMD)
 file(GLOB AKU_HEADERS "*.hh") 
 install(FILES ${AKU_HEADERS} DESTINATION include)
 install(TARGETS aku DESTINATION lib)
-IF(NOT CMAKE_SYSTEM_NAME) # not crosscompiling
+IF(NOT CROSS_MINGW) # not crosscompiling
   add_subdirectory( swig )
-ENDIF(NOT CMAKE_SYSTEM_NAME)
+ENDIF(NOT CROSS_MINGW)

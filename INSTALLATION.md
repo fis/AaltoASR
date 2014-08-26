@@ -68,3 +68,17 @@ In short
     cmake -G"Eclipse CDT4 - Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug .
 
 And import the resulting project in eclipse.
+
+## Building for Windows with MinGW
+
+Most of the system can be built into native Windows binaries with the MinGW-w64 cross-compiler, with the exception of the Python interface for the decoder and some of the tools.
+
+On Ubuntu (and other Debian-derived distributions), the required packages are
+
+    g++-mingw-w64
+    gfortran-mingw-w64
+
+The following build process will attempt to fetch and cross-build the required libraries (FLAC, Ogg and Vorbis; libsndfile; and OpenBLAS to provide BLAS and LAPACK interfaces) as well as the AaltoASR system binaries:
+
+    mkdir build
+    cmake -DCMAKE_TOOLCHAIN_FILE=../cmake/mingw/toolchain.cmake ../cmake/mingw

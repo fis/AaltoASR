@@ -17,17 +17,9 @@ IF(UNIX AND NOT WIN32)
 ENDIF(UNIX AND NOT WIN32)
 
 # MinGW cross compilation support
-IF(CMAKE_SYSTEM_NAME)
-  SET(CMAKE_INCLUDE_PATH ${CMAKE_INCLUDE_PATH} ${CMAKE_CURRENT_LIST_DIR}/build-deps/target/include)
-  SET(CMAKE_LIBRARY_PATH ${CMAKE_LIBRARY_PATH} ${CMAKE_CURRENT_LIST_DIR}/build-deps/target/lib)
-  SET(CROSS_CONFIGURE --disable-atlas --with-blas=openblas --with-lapack=openblas --host=${CROSS_TARGET} CFLAGS=-I${CMAKE_CURRENT_LIST_DIR}/build-deps/target/include LDFLAGS=-L${CMAKE_CURRENT_LIST_DIR}/build-deps/target/lib)
-  SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/mingw-deps/")
-  SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
-  SET(KISS_FFT 1)
-  ADD_DEFINITIONS("-DDLLIMPORT=")
-ELSE(CMAKE_SYSTEM_NAME)
-  SET(CROSS_CONFIGURE)
-ENDIF(CMAKE_SYSTEM_NAME)
+IF(CROSS_MINGW)
+  include("${CMAKE_SOURCE_DIR}/cmake/mingw/AaltoASR.cmake")
+ENDIF(CROSS_MINGW)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/Modules/")
 
@@ -40,7 +32,7 @@ ExternalProject_Add(lapackpp_ext
    URL_MD5 9ad74fb73fbcbf378c36a19a5dccbda7
   # SOURCE_DIR vendor/lapackpp-2.5.4
    PATCH_COMMAND patch -p1 < ${CMAKE_CURRENT_LIST_DIR}/vendor/lapackpp-2.5.4.ics.patch
-   CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-static=yes --enable-shared=no --prefix=<INSTALL_DIR> ${CROSS_CONFIGURE} CXXFLAGS=-fPIC
+   CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-static=yes --enable-shared=no --prefix=<INSTALL_DIR> ${LAPACKPP_CONFIGURE} CXXFLAGS=-fPIC
    BUILD_COMMAND make
    BUILD_IN_SOURCE 1
    INSTALL_COMMAND make install
