@@ -11,7 +11,7 @@ FIND_LIBRARY(SNDFILE_LIBRARY NAMES sndfile)
 MARK_AS_ADVANCED(SNDFILE_LIBRARY)
 
 # If cross-compiling, also include the Ogg, FLAC and Vorbis libs
-if(CMAKE_SYSTEM_NAME)
+if(CROSS_MINGW)
   FIND_LIBRARY(VORBIS_LIBRARY NAMES vorbis)
   FIND_LIBRARY(VORBISENC_LIBRARY NAMES vorbisenc)
   FIND_LIBRARY(VORBISFILE_LIBRARY NAMES vorbisfile)
@@ -23,7 +23,7 @@ if(CMAKE_SYSTEM_NAME)
 else()
   SET(_extravars)
   SET(_extralibs)
-endif(CMAKE_SYSTEM_NAME)
+endif(CROSS_MINGW)
 
 # handle the QUIETLY and REQUIRED arguments and set SNDFILE_FOUND to 
 # TRUE if all listed variables are TRUE
